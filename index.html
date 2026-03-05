@@ -3,7 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>iDraft Dashboard - Full App</title>
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self' 'unsafe-inline' 'unsafe-eval' https://cdn.tailwindcss.com https://cdn.jsdelivr.net https://unpkg.com https://mevobibpgzxzwefxdyiw.supabase.co https://api.dicebear.com https://lh3.googleusercontent.com; img-src 'self' data: blob: https:; connect-src 'self' https://mevobibpgzxzwefxdyiw.supabase.co; frame-ancestors 'none';">
+    <meta http-equiv="X-Content-Type-Options" content="nosniff">
+    <meta http-equiv="X-Frame-Options" content="DENY">
+    <meta name="referrer" content="strict-origin-when-cross-origin">
+    <title>iDraft</title>
     <!-- Tailwind CSS for styling -->
     <script src="https://cdn.tailwindcss.com"></script>
     <!-- Chart.js for graphs -->
@@ -902,7 +906,7 @@
                                 <div class="flex items-end gap-2">
                                     <span id="fin-savings-rate" class="text-3xl font-black text-green-600">0%</span>
                                 </div>
-                                <p class="text-xs text-zinc-400" id="fin-savings-sub">Target: <span class="font-bold text-zinc-700">20%</span> of income</p>
+                                <p class="text-xs text-zinc-400" id="fin-savings-sub">Formula: (income − budget) ÷ income</p>
                             </div>
                         </div>
                     </div>
@@ -1243,7 +1247,7 @@ const sb = {
         const cached = localStorage.getItem("idraft_session");
         if (cached) {
             try {
-                const s = JSON.parse(cached);
+                const s = _safeJSON(cached);
                 if (s.expires_at && Date.now() / 1000 < s.expires_at - 60) {
                     sb._session = s;
                     return s;
@@ -1379,6 +1383,73 @@ let activeNoteId = null;
 const BUCKET_EMOJIS = ["💰","🍔","🚕","🛍️","🏦","💡","🎮","🎓","🏋️","✈️","💊","🏠","📱","👗","☕","🎵","📚","🖥️"];
 
 function escHtml(s) { return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;"); }
+
+// ── Security Utilities ────────────────────────────────────────────
+function _safeJSON(str, fallback) {
+    try {
+        const p = JSON.parse(str);
+        if (p && typeof p === "object" && !Array.isArray(p)) {
+            ["__proto__","constructor","prototype"].forEach(k => { if(k in p) delete p[k]; });
+        }
+        return p;
+    } catch(e) { return fallback !== undefined ? fallback : null; }
+}
+function _sanitize(str, maxLen=300) {
+    if (typeof str !== "string") return "";
+    return str.slice(0, maxLen)
+        .replace(/<script[\s\S]*?<\/script>/gi,"")
+        .replace(/javascript:/gi,"")
+        .replace(/on\w+\s*=/gi,"")
+        .trim();
+}
+function _sessionOK() {
+    const s = sb._session;
+    if (!s || !s.access_token) return false;
+    if (s.expires_at && Date.now()/1000 > s.expires_at - 30) {
+        console.warn("[iDraft] Session expired"); sb.signOut().catch(()=>{}); return false;
+    }
+    return true;
+}
+const _rl = {};
+function _canWrite(key, ms=400) {
+    const now = Date.now();
+    if (_rl[key] && now - _rl[key] < ms) return false;
+    _rl[key] = now; return true;
+}
+
+// ── Sound Engine (Web Audio API — zero dependencies) ─────────────
+let _actx = null;
+function _getACtx() {
+    if (!_actx || _actx.state === "closed")
+        _actx = new (window.AudioContext || window.webkitAudioContext)();
+    if (_actx.state === "suspended") _actx.resume();
+    return _actx;
+}
+function _tone(freq, t0, dur, vol, ctx) {
+    const o = ctx.createOscillator(), g = ctx.createGain();
+    o.connect(g); g.connect(ctx.destination);
+    o.type = "sine"; o.frequency.setValueAtTime(freq, t0);
+    g.gain.setValueAtTime(0, t0);
+    g.gain.linearRampToValueAtTime(vol, t0 + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+    o.start(t0); o.stop(t0 + dur + 0.05);
+}
+function playSoundTaskDone() {
+    if (!appState.settings.sound) return;
+    try {
+        const ctx = _getACtx(), t = ctx.currentTime;
+        _tone(523.25, t,        0.22, 0.16, ctx); // C5
+        _tone(659.25, t + 0.11, 0.22, 0.13, ctx); // E5
+        _tone(783.99, t + 0.22, 0.36, 0.10, ctx); // G5
+    } catch(e) {}
+}
+function playSoundLevelUp() {
+    if (!appState.settings.sound) return;
+    try {
+        const ctx = _getACtx(), t = ctx.currentTime;
+        [523.25,659.25,783.99,1046.5].forEach((f,i) => _tone(f, t+i*0.1, 0.28, 0.11, ctx));
+    } catch(e) {}
+}
 function uid() { return currentUser?.id || null; }
 
 // ──────────────────────────────────────────────────────────────────
@@ -1490,22 +1561,65 @@ document.addEventListener("click", e => {
 // 4. CHARTS
 // ──────────────────────────────────────────────────────────────────
 function initCharts() {
-    if (lineChart)    lineChart.destroy();
-    if (doughnutChart) doughnutChart.destroy();
+    if (lineChart)     { lineChart.destroy();     lineChart     = null; }
+    if (doughnutChart) { doughnutChart.destroy(); doughnutChart = null; }
+
     const lineCtx = document.getElementById("lineChart")?.getContext("2d");
     if (lineCtx) {
+        // Root type MUST be "bar" for mixed bar+line in Chart.js 4+
+        // Line dataset overrides type to "line"
         lineChart = new Chart(lineCtx, {
-            type: "line",
-            data: { labels: ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"], datasets: [
-                { type:"bar",  label:"Completed", data:[0,0,0,0,0,0,0], backgroundColor:"#18181b", borderRadius:5, barPercentage:0.5 },
-                { type:"line", label:"Added",     data:[0,0,0,0,0,0,0], borderColor:"#a1a1aa", borderWidth:2, tension:0.4, fill:false, borderDash:[5,5], pointRadius:4, pointBackgroundColor:"#ffffff", pointBorderColor:"#a1a1aa" }
-            ]},
-            options: { responsive:true, maintainAspectRatio:false,
-                plugins:{ legend:{display:false}, tooltip:{mode:"index",intersect:false} },
-                scales:{ x:{grid:{display:false},border:{display:false},ticks:{color:"#a1a1aa",font:{size:11}}}, y:{display:false,beginAtZero:true} },
-                animation:{duration:600} }
+            type: "bar",
+            data: {
+                labels: ["—","—","—","—","—","—","Today"],
+                datasets: [
+                    {
+                        type: "bar",
+                        label: "Completed",
+                        data: [0,0,0,0,0,0,0],
+                        backgroundColor: "#18181b",
+                        borderRadius: 6,
+                        barPercentage: 0.55,
+                        categoryPercentage: 0.7,
+                        order: 2
+                    },
+                    {
+                        type: "line",
+                        label: "Added",
+                        data: [0,0,0,0,0,0,0],
+                        borderColor: "#a1a1aa",
+                        borderWidth: 2,
+                        borderDash: [4,4],
+                        tension: 0.35,
+                        fill: false,
+                        pointRadius: 4,
+                        pointBackgroundColor: "#ffffff",
+                        pointBorderColor: "#a1a1aa",
+                        pointBorderWidth: 2,
+                        order: 1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: {
+                    legend: { display: false },
+                    tooltip: {
+                        mode: "index",
+                        intersect: false,
+                        callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y}` }
+                    }
+                },
+                scales: {
+                    x: { grid:{display:false}, border:{display:false}, ticks:{color:"#a1a1aa",font:{size:11}} },
+                    y: { display:false, beginAtZero:true, min:0, suggestedMax:5 }
+                },
+                animation: { duration: 500 }
+            }
         });
     }
+
     const dCtx = document.getElementById("doughnutChart")?.getContext("2d");
     if (dCtx) {
         doughnutChart = new Chart(dCtx, {
@@ -1514,7 +1628,7 @@ function initCharts() {
             options: { responsive:true, maintainAspectRatio:false,
                 plugins:{legend:{display:false},tooltip:{enabled:false}},
                 rotation:-90, circumference:360,
-                animation:{animateRotate:true,duration:700} }
+                animation:{animateRotate:true,duration:600} }
         });
     }
 }
@@ -1592,9 +1706,11 @@ async function checkAllowedUser(email) {
 }
 
 async function bootApp() {
-    // Restore dark mode BEFORE anything renders — prevents flash
     _restoreDarkMode();
-    // Show auth screen first
+    // Unlock Web Audio on first interaction (browser autoplay policy)
+    const _ua = () => { try { _getACtx(); } catch(e){} };
+    document.addEventListener("click",   _ua, { once:true, passive:true });
+    document.addEventListener("keydown", _ua, { once:true, passive:true });
     showAuthScreen("loading");
 
     const session = await sb.getSession();
@@ -1995,13 +2111,22 @@ function copyShareLink() {
     }).catch(() => { showNotification("Copy: " + val, "info"); });
 }
 function todayDateStr() {
-    return new Date().toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+    return new Date().toISOString().slice(0,10); // "YYYY-MM-DD"
+}
+function _displayDate(d) {
+    if (!d || d === "—") return d;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(d)) {
+        const dt = new Date(d + "T00:00:00");
+        return dt.toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+    }
+    return d; // legacy "5 Mar" format — pass through
 }
 
 // ──────────────────────────────────────────────────────────────────
 // 11. ROUTER
 // ──────────────────────────────────────────────────────────────────
 function switchView(name) {
+    if (uid() && !_sessionOK()) return;
     mainContent?.scrollTo({ top:0, behavior:"smooth" });
     if (globalHeader) globalHeader.style.transform = "translateY(0)";
     document.querySelectorAll(".view-section").forEach(el => el.classList.remove("active"));
@@ -2057,24 +2182,31 @@ function updateDashboardStats() {
         if (el("month-progress-val")) el("month-progress-val").textContent = donePct + "%";
     }
     if (lineChart) {
-        // Build real 7-day history from task dates
+        // 7-day history — match tasks by ISO date OR legacy "5 Mar" format
         const today = new Date(); today.setHours(0,0,0,0);
-        const dayLabels = [];
-        const dayDone   = [];
-        const dayActive = [];
+        const dayLabels = [], dayCompleted = [], dayAdded = [];
         for (let i = 6; i >= 0; i--) {
             const d = new Date(today); d.setDate(today.getDate() - i);
             const iso = d.toISOString().slice(0,10);
-            // label as Mon/Tue/... or "Today"
-            dayLabels.push(i===0 ? "Today" : ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]);
-            // tasks created on this day that are completed
-            const tasksThisDay = appState.tasks.filter(t => (t.date||"")=== iso);
-            dayDone.push(tasksThisDay.filter(t=>t.status==="completed").length);
-            dayActive.push(tasksThisDay.filter(t=>t.status==="active").length);
+            const legacy = d.toLocaleDateString("en-GB",{day:"numeric",month:"short"});
+            const label  = i === 0 ? "Today" : ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()];
+            dayLabels.push(label);
+            // Match both date formats for backward compatibility
+            const forDay = appState.tasks.filter(t => {
+                const td = t.date || "";
+                return td === iso || td === legacy;
+            });
+            dayCompleted.push(forDay.filter(t => t.status === "completed").length);
+            dayAdded.push(forDay.length); // Added = ALL tasks created that day
         }
-        lineChart.data.labels = dayLabels;
-        lineChart.data.datasets[0].data = dayDone;
-        lineChart.data.datasets[1].data = dayActive;
+        lineChart.data.labels           = dayLabels;
+        lineChart.data.datasets[0].data = dayCompleted;
+        lineChart.data.datasets[1].data = dayAdded;
+        // Dark mode color sync
+        if (appState.settings.darkmode) {
+            lineChart.data.datasets[0].backgroundColor = "#e4e4e7";
+            lineChart.data.datasets[1].borderColor      = "#71717a";
+        }
         lineChart.update();
     }
 }
@@ -2115,7 +2247,7 @@ function renderTasks() {
         const d = document.createElement("div");
         d.className = "bg-white p-5 rounded-3xl shadow-sm border border-zinc-100 shrink-0 w-[240px] flex flex-col justify-between transition hover:-translate-y-1 hover:shadow-md cursor-grab active:cursor-grabbing select-none";
         d.draggable = true; d.dataset.taskId = t.id;
-        d.innerHTML = `<div class="relative"><span class="text-[10px] ${linked?"bg-blue-50 text-blue-600 border-blue-100":"bg-zinc-100 text-zinc-600 border-zinc-200"} px-2 py-0.5 rounded-full border font-bold mb-3 inline-block">${linked?"Project":"Global"}</span><div class="flex justify-between items-start mb-2"><div class="w-10 h-10 bg-zinc-50 rounded-xl border border-zinc-100 flex items-center justify-center"><i data-lucide="${t.icon||"zap"}" class="w-5 h-5 text-zinc-600"></i></div><div class="flex gap-1"><button onclick="openEditTask(${t.id})" class="text-zinc-200 hover:text-blue-500 hover:bg-blue-50 p-1.5 rounded-lg transition" title="Edit"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="markTaskDone(${t.id})" class="text-zinc-300 hover:text-green-500 hover:bg-green-50 p-1.5 rounded-lg transition" title="Done"><i data-lucide="check-circle-2" class="w-5 h-5"></i></button><button onclick="deleteTask(${t.id})" class="text-zinc-200 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition" title="Delete"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></div><h3 class="font-bold text-zinc-900 text-sm mb-4 leading-snug">${escHtml(t.title)}${isHigh?` <i data-lucide="flame" class="w-4 h-4 text-orange-500 inline-block"></i>`:""}</h3></div><div class="flex justify-between items-center mt-auto border-t border-zinc-100 pt-3"><span class="text-xs text-zinc-400 font-medium flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${t.date}</span><button onclick="markTaskDone(${t.id})" class="w-8 h-8 bg-zinc-900 text-white rounded-lg flex items-center justify-center hover:bg-zinc-700 transition shadow-sm" title="Complete"><i data-lucide="check" class="w-4 h-4"></i></button></div>`;
+        d.innerHTML = `<div class="relative"><span class="text-[10px] ${linked?"bg-blue-50 text-blue-600 border-blue-100":"bg-zinc-100 text-zinc-600 border-zinc-200"} px-2 py-0.5 rounded-full border font-bold mb-3 inline-block">${linked?"Project":"Global"}</span><div class="flex justify-between items-start mb-2"><div class="w-10 h-10 bg-zinc-50 rounded-xl border border-zinc-100 flex items-center justify-center"><i data-lucide="${t.icon||"zap"}" class="w-5 h-5 text-zinc-600"></i></div><div class="flex gap-1"><button onclick="openEditTask(${t.id})" class="text-zinc-200 hover:text-blue-500 hover:bg-blue-50 p-1.5 rounded-lg transition" title="Edit"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="markTaskDone(${t.id})" class="text-zinc-300 hover:text-green-500 hover:bg-green-50 p-1.5 rounded-lg transition" title="Done"><i data-lucide="check-circle-2" class="w-5 h-5"></i></button><button onclick="deleteTask(${t.id})" class="text-zinc-200 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition" title="Delete"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></div><h3 class="font-bold text-zinc-900 text-sm mb-4 leading-snug">${escHtml(t.title)}${isHigh?` <i data-lucide="flame" class="w-4 h-4 text-orange-500 inline-block"></i>`:""}</h3></div><div class="flex justify-between items-center mt-auto border-t border-zinc-100 pt-3"><span class="text-xs text-zinc-400 font-medium flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${_displayDate(t.date)}</span><button onclick="markTaskDone(${t.id})" class="w-8 h-8 bg-zinc-900 text-white rounded-lg flex items-center justify-center hover:bg-zinc-700 transition shadow-sm" title="Complete"><i data-lucide="check" class="w-4 h-4"></i></button></div>`;
         c.appendChild(d);
     });
     lucide.createIcons(); initDashDrag();
@@ -2168,13 +2300,13 @@ function renderTasksPage() {
     active.sort((a,b)=>{const p={high:0,medium:1,low:2};return(p[a.priority]||1)-(p[b.priority]||1)||b.id-a.id;});
     const top=active.find(t=>t.isSpotlight)||active[0];
     const tProj=appState.projects.find(p=>p.id==top.projectId);
-    spot.innerHTML=`<div class="bg-gradient-to-br from-zinc-900 to-zinc-800 text-white p-8 rounded-[2rem] shadow-xl relative overflow-hidden"><div class="absolute right-0 top-0 w-32 h-32 bg-white/5 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div><div class="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-6"><div class="flex items-center gap-5 flex-1"><div class="w-14 h-14 bg-white/10 border border-white/20 rounded-2xl flex items-center justify-center shrink-0"><i data-lucide="${top.icon||"zap"}" class="w-7 h-7 text-white"></i></div><div><h2 class="text-2xl font-bold mb-2">${escHtml(top.title)}</h2><div class="flex flex-wrap gap-2 items-center text-xs font-medium text-zinc-300"><i data-lucide="clock" class="w-3.5 h-3.5"></i> ${top.date}${tProj?` · 📁 ${escHtml(tProj.title)}`:""}</div></div></div><button onclick="markTaskDone(${top.id})" class="px-6 py-3 bg-white text-zinc-900 font-bold rounded-xl hover:bg-green-400 hover:text-white transition shadow-sm flex items-center gap-2 shrink-0"><i data-lucide="check" class="w-5 h-5"></i> Complete</button></div></div>`;
+    spot.innerHTML=`<div class="bg-gradient-to-br from-zinc-900 to-zinc-800 text-white p-8 rounded-[2rem] shadow-xl relative overflow-hidden"><div class="absolute right-0 top-0 w-32 h-32 bg-white/5 rounded-full blur-2xl -mr-10 -mt-10 pointer-events-none"></div><div class="relative z-10 flex flex-col md:flex-row justify-between items-start md:items-center gap-6"><div class="flex items-center gap-5 flex-1"><div class="w-14 h-14 bg-white/10 border border-white/20 rounded-2xl flex items-center justify-center shrink-0"><i data-lucide="${top.icon||"zap"}" class="w-7 h-7 text-white"></i></div><div><h2 class="text-2xl font-bold mb-2">${escHtml(top.title)}</h2><div class="flex flex-wrap gap-2 items-center text-xs font-medium text-zinc-300"><i data-lucide="clock" class="w-3.5 h-3.5"></i> ${_displayDate(top.date)}${tProj?` · 📁 ${escHtml(tProj.title)}`:""}</div></div></div><button onclick="markTaskDone(${top.id})" class="px-6 py-3 bg-white text-zinc-900 font-bold rounded-xl hover:bg-green-400 hover:text-white transition shadow-sm flex items-center gap-2 shrink-0"><i data-lucide="check" class="w-5 h-5"></i> Complete</button></div></div>`;
     active.filter(t=>t.id!==top.id).forEach(t=>{
         const isHigh=t.priority==="high"; const proj=appState.projects.find(p=>p.id==t.projectId);
         const row=document.createElement("div");
         row.className=`bg-white border ${isHigh?"border-orange-200":"border-zinc-200"} p-3 rounded-xl hover:shadow-md transition group flex items-center justify-between gap-4 relative overflow-hidden cursor-grab`;
         row.draggable=true; row.dataset.rowId=t.id;
-        row.innerHTML=`${isHigh?`<div class="absolute left-0 top-0 bottom-0 w-1 bg-orange-400 rounded-l-xl"></div>`:""}<div class="flex items-center gap-4 overflow-hidden flex-1 pl-${isHigh?3:2} w-full"><div class="w-10 h-10 ${isHigh?"bg-orange-50 text-orange-600":"bg-zinc-50 text-zinc-600"} rounded-xl border border-zinc-100 flex items-center justify-center shrink-0"><i data-lucide="${t.icon||"zap"}" class="w-5 h-5"></i></div><div class="flex flex-col overflow-hidden"><h4 class="font-bold text-zinc-900 text-sm truncate">${escHtml(t.title)}</h4><p class="text-[10px] text-zinc-400 font-medium flex items-center gap-1 mt-0.5"><i data-lucide="clock" class="w-3 h-3"></i> ${t.date}${proj?` · 📁 ${escHtml(proj.title)}`:""}</p></div></div><div class="flex gap-1.5 opacity-0 group-hover:opacity-100 transition shrink-0"><button onclick="openEditTask(${t.id})" class="p-2 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition" title="Edit"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="promoteToSpotlight(${t.id})" class="p-2 text-yellow-400 hover:text-yellow-600 hover:bg-yellow-50 rounded-lg transition" title="Pin"><i data-lucide="star" class="w-4 h-4"></i></button><button onclick="deleteTask(${t.id})" class="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button><button onclick="markTaskDone(${t.id})" class="p-2 text-zinc-400 hover:text-green-500 hover:bg-green-50 rounded-lg transition"><i data-lucide="check-circle-2" class="w-4 h-4"></i></button></div>`;
+        row.innerHTML=`${isHigh?`<div class="absolute left-0 top-0 bottom-0 w-1 bg-orange-400 rounded-l-xl"></div>`:""}<div class="flex items-center gap-4 overflow-hidden flex-1 pl-${isHigh?3:2} w-full"><div class="w-10 h-10 ${isHigh?"bg-orange-50 text-orange-600":"bg-zinc-50 text-zinc-600"} rounded-xl border border-zinc-100 flex items-center justify-center shrink-0"><i data-lucide="${t.icon||"zap"}" class="w-5 h-5"></i></div><div class="flex flex-col overflow-hidden"><h4 class="font-bold text-zinc-900 text-sm truncate">${escHtml(t.title)}</h4><p class="text-[10px] text-zinc-400 font-medium flex items-center gap-1 mt-0.5"><i data-lucide="clock" class="w-3 h-3"></i> ${_displayDate(t.date)}${proj?` · 📁 ${escHtml(proj.title)}`:""}</p></div></div><div class="flex gap-1.5 opacity-0 group-hover:opacity-100 transition shrink-0"><button onclick="openEditTask(${t.id})" class="p-2 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition" title="Edit"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="promoteToSpotlight(${t.id})" class="p-2 text-yellow-400 hover:text-yellow-600 hover:bg-yellow-50 rounded-lg transition" title="Pin"><i data-lucide="star" class="w-4 h-4"></i></button><button onclick="deleteTask(${t.id})" class="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button><button onclick="markTaskDone(${t.id})" class="p-2 text-zinc-400 hover:text-green-500 hover:bg-green-50 rounded-lg transition"><i data-lucide="check-circle-2" class="w-4 h-4"></i></button></div>`;
         queue.appendChild(row);
     });
     appState.goals.forEach(g=>{
@@ -2631,7 +2763,7 @@ function _getStreak() {
 function _updateStreak() {
     try {
         const today = new Date().toISOString().slice(0,10);
-        const data  = JSON.parse(localStorage.getItem("idraft_streak") || "{}");
+        const data  = _safeJSON(localStorage.getItem("idraft_streak") || "{}", {});
         if (data.last === today) return;                       // already updated today
         const yesterday = new Date(Date.now()-86400000).toISOString().slice(0,10);
         const newStreak = data.last === yesterday ? (data.streak||0) + 1 : 1;
@@ -2642,7 +2774,7 @@ function _updateStreak() {
 
 function _checkAndUnlockAchievements() {
     const stats = _getAchievementStats();
-    const unlocked = JSON.parse(localStorage.getItem("idraft_achievements") || "[]");
+    const unlocked = _safeJSON(localStorage.getItem("idraft_achievements") || "[]", []);
     let newUnlocks = [];
     ACHIEVEMENTS_DEF.forEach(def => {
         if (!unlocked.includes(def.id) && def.check(stats)) {
@@ -2748,25 +2880,30 @@ function renderFinance(){
     if(bar){bar.style.width=pct+"%";bar.className="h-4 rounded-full fin-bar "+(over?"bg-red-500":pct>75?"bg-orange-400":"bg-green-500");}
     const txCount=appState.finance.expenses.length, avg=txCount?Math.round(spent/txCount):0;
     set("fin-tx-count",txCount);set("fin-avg",avg.toLocaleString()+" DH");
-    // Savings rate: only meaningful when income is set AND there are expenses
-    // "How much of your income are you saving?" = (income - spent) / income
-    // Guard: if no expenses logged yet → show pending state, not 100%
+    // ── Savings Rate: (Income − Budget) / Income ────────────────────
+    // Budget = max spending allowance. Savings = money you keep (income − budget).
+    // This is PLANNED savings rate. Separately show actual surplus (income − spent).
     let savingsRateStr = "—", savingsColor = "text-zinc-400", savingsSubtext = "";
-    if (income > 0) {
-        if (appState.finance.expenses.length === 0) {
-            savingsRateStr = "—";
-            savingsColor = "text-zinc-400";
-            savingsSubtext = "Log expenses to see your rate";
+    if (income > 0 && budget > 0) {
+        const plannedSavingsDH = Math.max(0, income - budget);       // e.g. 6000-4000=2000
+        const plannedRate      = Math.round(plannedSavingsDH / income * 100); // 33%
+        const actualSurplusDH  = Math.max(0, income - spent);         // e.g. 6000-469=5531
+        savingsRateStr = plannedRate + "%";
+        savingsColor   = plannedRate >= 20 ? "text-green-500"
+                       : plannedRate >= 10 ? "text-orange-500" : "text-red-500";
+        if (spent > 0) {
+            const diff    = actualSurplusDH - plannedSavingsDH;
+            const diffStr = diff >= 0
+                ? `+${diff.toLocaleString()} DH ahead of plan`
+                : `-${Math.abs(diff).toLocaleString()} DH behind plan`;
+            savingsSubtext = `${plannedSavingsDH.toLocaleString()} DH planned · ${diffStr}`;
         } else {
-            const savedDH = Math.max(0, income - spent);
-            const rate = Math.round(savedDH / income * 100);
-            savingsRateStr = rate + "%";
-            savingsColor = rate >= 20 ? "text-green-500" : rate >= 10 ? "text-orange-500" : "text-red-500";
-            savingsSubtext = savedDH.toLocaleString() + " DH saved of " + income.toLocaleString() + " DH income";
+            savingsSubtext = `${plannedSavingsDH.toLocaleString()} DH / month set aside`;
         }
+    } else if (income > 0 && budget === 0) {
+        savingsSubtext = "Set a monthly budget to calculate";
     } else {
-        savingsRateStr = "—";
-        savingsSubtext = "Set your income in budget settings";
+        savingsSubtext = "Set income & budget in Finance settings";
     }
     const srEl = document.getElementById("fin-savings-rate");
     if (srEl) { srEl.textContent = savingsRateStr; srEl.className = "text-3xl font-black " + savingsColor; }
@@ -2818,7 +2955,7 @@ function openExpenseModal(preselectedBucket){
 function closeExpenseModal(){_hideModal("expenseModal","expenseModalContent");}
 async function saveExpense(){
     const amount=parseFloat(document.getElementById("exp-amount")?.value||"0");
-    const desc=document.getElementById("exp-desc")?.value.trim()||"";
+    const desc=_sanitize(document.getElementById("exp-desc")?.value.trim()||"",200);
     const bucket=document.getElementById("exp-category")?.value||"other";
     const projRaw=document.getElementById("exp-project")?.value||"none";
     const projId=projRaw==="none"?"none":parseInt(projRaw);
@@ -2900,11 +3037,14 @@ async function markTaskDone(id){
     const t=appState.tasks.find(x=>x.id===id);if(!t)return;
     t.status="completed";
     _updateStreak();
+    const prevLv = _computeLevel(_computeXP());
     _checkAndUnlockAchievements();
+    playSoundTaskDone();
     _fullRefresh();
     const xp=_computeXP(), lv=_computeLevel(xp);
+    if (lv > prevLv) playSoundLevelUp();
     showNotification(`Task done! +15 XP ✅ (L${lv})`,"success");
-    if(uid()) sb.update("tasks",`id=eq.${id}&user_id=eq.${uid()}`,{status:"completed"}).catch(()=>{});
+    if(uid() && _sessionOK()) sb.update("tasks",`id=eq.${id}&user_id=eq.${uid()}`,{status:"completed"}).catch(()=>{});
 }
 async function undoTask(id){
     const t=appState.tasks.find(x=>x.id===id);if(!t)return;
@@ -3039,7 +3179,7 @@ function closeModal(){_hideModal("inputModal","inputModalContent");currentAction
 
 if(document.getElementById("modalSaveBtn")){
     document.getElementById("modalSaveBtn").addEventListener("click",async()=>{
-        const v=modalInput?.value.trim();if(!v)return closeModal();
+        const v=_sanitize(modalInput?.value.trim()||"",200);if(!v)return closeModal();
         if(currentAction==="task"){
             const pIdRaw=document.getElementById("modalProjectSelect")?.value||"none";
             const gIdRaw=document.getElementById("modalTaskGoal")?.value||"none";
