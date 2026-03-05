@@ -275,10 +275,15 @@
         #crop-canvas-wrap {
             position:relative; overflow:hidden; border-radius:50%;
             width:220px; height:220px; cursor:move; user-select:none;
-            border:3px solid #22c55e; box-shadow:0 0 0 3000px rgba(0,0,0,0.6);
-            flex-shrink:0;
+            border:4px solid #22c55e;
+            box-shadow:0 0 0 9999px rgba(0,0,0,0.72),0 0 40px rgba(0,0,0,0.4);
+            flex-shrink:0; background:#000;
         }
-        #crop-img { position:absolute; transform-origin:0 0; }
+        #crop-img {
+            position:absolute; transform-origin:top left;
+            max-width:none; max-height:none; display:block;
+            pointer-events:none; user-select:none; -webkit-user-drag:none;
+        }
         /* Finance bucket card hover */
         .bucket-card { transition:transform .15s,box-shadow .15s; }
         .bucket-card:hover { transform:translateY(-3px); box-shadow:0 8px 24px rgba(0,0,0,.08); }
@@ -824,7 +829,7 @@
                         <div class="bg-white p-6 rounded-[2rem] shadow-sm border border-zinc-100 flex flex-col h-[500px]">
                             <div class="flex justify-between items-center mb-4">
                                 <h3 class="font-semibold text-lg text-zinc-900 flex items-center gap-2"><i data-lucide="check-square" class="w-5 h-5 text-green-500"></i> Completed Tasks</h3>
-                                <span class="text-xs text-zinc-400 bg-zinc-100 px-2 py-1 rounded font-medium">Undo available</span>
+                                <div class="flex gap-2"><span class="text-xs text-zinc-400 bg-zinc-100 px-2 py-1 rounded font-medium">Undo available</span><button onclick="_autoPurgeOldTasks();renderArchive()" class="text-xs font-bold text-red-400 hover:text-red-600 bg-red-50 hover:bg-red-100 px-2 py-1 rounded transition">Purge 7d+</button></div>
                             </div>
                             <div id="archive-tasks-container" class="flex-1 overflow-y-auto space-y-3 pr-2"></div>
                         </div>
@@ -863,7 +868,7 @@
                                 <div>
                                     <p class="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2">Left to spend this month</p>
                                     <div id="fin-left-to-spend" class="text-6xl font-black text-zinc-900 tracking-tight transition-all duration-500">—</div>
-                                    <p id="fin-left-label" class="text-sm font-medium text-zinc-500 mt-2">of <span id="fin-budget-label">—</span> DH monthly budget</p>
+                                    <p id="fin-left-label" class="text-sm font-medium text-zinc-500 mt-2">of <span id="fin-budget-label">—</span> DH budget · Income: <span id="fin-income-label" class="font-bold text-zinc-700">—</span> DH</p>
                                 </div>
                                 <div class="text-right">
                                     <p class="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2">Spent</p>
@@ -897,8 +902,7 @@
                                 <div class="flex items-end gap-2">
                                     <span id="fin-savings-rate" class="text-3xl font-black text-green-600">0%</span>
                                 </div>
-                                <p class="text-xs text-zinc-400 mb-1">Target: <span class="font-bold text-zinc-700">20%</span> of income</p>
-                                <p class="text-[11px] text-zinc-400" id="fin-saved-amount">Log expenses to calculate savings</p>
+                                <p class="text-xs text-zinc-400" id="fin-savings-sub">Target: <span class="font-bold text-zinc-700">20%</span> of income</p>
                             </div>
                         </div>
                     </div>
@@ -1661,6 +1665,8 @@ async function enterApp(user, profile) {
         if (k)  k.style.transform = "translateX(16px)";
     }
 
+    // Auto-purge completed tasks older than 7 days
+    _autoPurgeOldTasks();
     renderDashboard();
     showNotification(`Welcome back, ${appState.user.name}! 🔥`, "success");
 }
@@ -1929,8 +1935,12 @@ function applyDarkMode(on) {
         lineChart.update();
     }
     if (doughnutChart) {
-        // Re-run updateDashboardStats to repaint with correct dark/light colors
-        updateDashboardStats();
+        const pct = doughnutChart.data.datasets[0].data[0] || 0;
+        const done100 = pct >= 100;
+        const doneColor = on ? "#4ade80" : "#22c55e";
+        const pendColor = on ? "#3f3f46" : "#e4e4e7";
+        doughnutChart.data.datasets[0].backgroundColor = done100 ? [doneColor, doneColor] : [doneColor, pendColor];
+        doughnutChart.update();
     }
 }
 
@@ -2029,21 +2039,19 @@ function updateDashboardStats() {
     if (el("total-projects-stopped")) el("total-projects-stopped").textContent = projDone;
 
     if (doughnutChart) {
-        const isDark = document.documentElement.classList.contains("dark");
-        const greenColor  = isDark ? "#4ade80" : "#22c55e";
-        const emptyColor  = isDark ? "#3f3f46" : "#e4e4e7";
-
+        // Use percentage [pct, 100-pct] so 100% = exactly full circle
+        const pctDone = donePct;
+        const pctLeft = 100 - pctDone;
+        // When total=0, show all-grey empty ring
         if (total === 0) {
-            // No tasks at all — fully grey
             doughnutChart.data.datasets[0].data = [0, 100];
-            doughnutChart.data.datasets[0].backgroundColor = [emptyColor, emptyColor];
-        } else if (donePct >= 100) {
-            // 100% — solid full green circle (two identical segments, no gap)
-            doughnutChart.data.datasets[0].data = [100, 0];
-            doughnutChart.data.datasets[0].backgroundColor = [greenColor, greenColor];
+            doughnutChart.data.datasets[0].backgroundColor = ["transparent", "#e4e4e7"];
         } else {
-            doughnutChart.data.datasets[0].data = [donePct, 100 - donePct];
-            doughnutChart.data.datasets[0].backgroundColor = [greenColor, emptyColor];
+            doughnutChart.data.datasets[0].data = [pctDone, pctLeft > 0 ? pctLeft : 0];
+            doughnutChart.data.datasets[0].backgroundColor = pctDone === 100
+                ? ["#22c55e", "#22c55e"]
+                : (doughnutChart.data.datasets[0].backgroundColor[0] === "#4ade80"
+                   ? ["#4ade80", "#3f3f46"] : ["#22c55e", "#e4e4e7"]);
         }
         doughnutChart.update();
         if (el("month-progress-val")) el("month-progress-val").textContent = donePct + "%";
@@ -2362,41 +2370,45 @@ function _getStoredAvatar() {
 }
 
 // ── Avatar Crop State ──────────────────────────────────────────
-let _cropFile = null, _cropX = 0, _cropY = 0, _cropScale = 1;
-let _cropDragging = false, _cropStartX = 0, _cropStartY = 0, _cropBaseX = 0, _cropBaseY = 0;
+// Uses a simple translate + scale approach on a positioned img inside
+// a clipped circular container. Canvas reads image data directly.
+let _cropFile = null;
+let _cropX = 0, _cropY = 0, _cropScale = 1;
+let _cropMinScale = 1;
 let _cropNatW = 0, _cropNatH = 0;
+let _cropDragging = false, _cropMX = 0, _cropMY = 0, _cropBX = 0, _cropBY = 0;
+const CROP_SIZE = 220; // px — must match CSS width/height of #crop-canvas-wrap
 
 function uploadAvatar(input) {
     const file = input.files?.[0];
     if (!file) return;
-    if (file.size > 8 * 1024 * 1024) return showNotification("Image too large (max 8 MB)","warn");
+    input.value = "";
+    if (file.size > 10 * 1024 * 1024) return showNotification("Image too large (max 10 MB)","warn");
     if (!file.type.startsWith("image/")) return showNotification("Invalid file type","warn");
     _cropFile = file;
-    input.value = "";
 
-    const reader = new FileReader();
-    reader.onload = e => {
-        const img = document.getElementById("crop-img");
-        img.onload = () => {
-            _cropNatW = img.naturalWidth;
-            _cropNatH = img.naturalHeight;
-            // Scale so image exactly COVERS the 220×220 circle — no white gaps
-            _cropScale = Math.max(220 / _cropNatW, 220 / _cropNatH);
-            // Center the image inside the circle
-            _cropX = (220 - _cropNatW * _cropScale) / 2;
-            _cropY = (220 - _cropNatH * _cropScale) / 2;
-            _applyCropTransform();
-            // Set slider min/max dynamically relative to the cover scale
-            const slider = document.getElementById("crop-zoom");
-            if (slider) {
-                slider.min   = (_cropScale * 0.9).toFixed(3);   // slight zoom-out allowed
-                slider.max   = (_cropScale * 5.0).toFixed(3);   // 5× zoom in
-                slider.value = _cropScale;
-            }
-        };
-        img.src = e.target.result;
+    const url = URL.createObjectURL(file);
+    const img = document.getElementById("crop-img");
+    img.onload = () => {
+        URL.revokeObjectURL(url);
+        _cropNatW = img.naturalWidth;
+        _cropNatH = img.naturalHeight;
+        // Fill-fit: image must fully cover the circle
+        _cropMinScale = Math.max(CROP_SIZE / _cropNatW, CROP_SIZE / _cropNatH);
+        _cropScale = _cropMinScale;
+        // Center
+        _cropX = (CROP_SIZE - _cropNatW * _cropScale) / 2;
+        _cropY = (CROP_SIZE - _cropNatH * _cropScale) / 2;
+        _applyCropTransform();
+        const slider = document.getElementById("crop-zoom");
+        if (slider) {
+            slider.min  = _cropMinScale;
+            slider.max  = _cropMinScale * 3;
+            slider.step = _cropMinScale * 0.01;
+            slider.value = _cropScale;
+        }
     };
-    reader.readAsDataURL(file);
+    img.src = url;
     document.getElementById("avatar-crop-modal").classList.add("open");
     lucide.createIcons({ root: document.getElementById("avatar-crop-modal") });
     _initCropDrag();
@@ -2404,7 +2416,18 @@ function uploadAvatar(input) {
 
 function _applyCropTransform() {
     const img = document.getElementById("crop-img");
-    if (img) img.style.transform = `translate(${_cropX}px,${_cropY}px) scale(${_cropScale})`;
+    if (!img) return;
+    img.style.width  = (_cropNatW * _cropScale) + "px";
+    img.style.height = (_cropNatH * _cropScale) + "px";
+    img.style.left   = _cropX + "px";
+    img.style.top    = _cropY + "px";
+    img.style.transform = ""; // explicit left/top — no transform needed
+}
+
+function _clampCrop() {
+    const w = _cropNatW * _cropScale, h = _cropNatH * _cropScale;
+    _cropX = Math.min(0, Math.max(CROP_SIZE - w, _cropX));
+    _cropY = Math.min(0, Math.max(CROP_SIZE - h, _cropY));
 }
 
 function _initCropDrag() {
@@ -2412,109 +2435,152 @@ function _initCropDrag() {
     if (!wrap || wrap._cropBound) return;
     wrap._cropBound = true;
 
-    const clamp = () => {
-        const w = _cropNatW * _cropScale;
-        const h = _cropNatH * _cropScale;
-        // Image must cover the circle: X range is [220-w, 0], Y range is [220-h, 0]
-        // But if image smaller than circle (shouldn't happen at cover scale): center it
-        if (w >= 220) { _cropX = Math.min(0, Math.max(220 - w, _cropX)); }
-        else          { _cropX = (220 - w) / 2; }
-        if (h >= 220) { _cropY = Math.min(0, Math.max(220 - h, _cropY)); }
-        else          { _cropY = (220 - h) / 2; }
-    };
+    // Mouse
+    wrap.addEventListener("mousedown", e => {
+        _cropDragging=true; _cropMX=e.clientX; _cropMY=e.clientY;
+        _cropBX=_cropX; _cropBY=_cropY; e.preventDefault();
+    });
+    document.addEventListener("mousemove", e => {
+        if (!_cropDragging) return;
+        _cropX = _cropBX + (e.clientX - _cropMX);
+        _cropY = _cropBY + (e.clientY - _cropMY);
+        _clampCrop(); _applyCropTransform();
+    });
+    document.addEventListener("mouseup", () => { _cropDragging=false; });
 
-    wrap.addEventListener("mousedown",  e => { _cropDragging=true; _cropStartX=e.clientX; _cropStartY=e.clientY; _cropBaseX=_cropX; _cropBaseY=_cropY; e.preventDefault(); });
-    document.addEventListener("mousemove", e => { if(!_cropDragging) return; _cropX=_cropBaseX+(e.clientX-_cropStartX); _cropY=_cropBaseY+(e.clientY-_cropStartY); clamp(); _applyCropTransform(); });
-    document.addEventListener("mouseup",  () => { _cropDragging=false; });
+    // Touch
+    wrap.addEventListener("touchstart", e => {
+        const t=e.touches[0]; _cropDragging=true;
+        _cropMX=t.clientX; _cropMY=t.clientY; _cropBX=_cropX; _cropBY=_cropY;
+        e.preventDefault();
+    },{passive:false});
+    document.addEventListener("touchmove", e => {
+        if (!_cropDragging) return;
+        const t=e.touches[0];
+        _cropX=_cropBX+(t.clientX-_cropMX); _cropY=_cropBY+(t.clientY-_cropMY);
+        _clampCrop(); _applyCropTransform();
+    });
+    document.addEventListener("touchend", () => { _cropDragging=false; });
 
-    wrap.addEventListener("touchstart", e => { const t=e.touches[0]; _cropDragging=true; _cropStartX=t.clientX; _cropStartY=t.clientY; _cropBaseX=_cropX; _cropBaseY=_cropY; e.preventDefault(); },{passive:false});
-    document.addEventListener("touchmove",  e => { if(!_cropDragging) return; const t=e.touches[0]; _cropX=_cropBaseX+(t.clientX-_cropStartX); _cropY=_cropBaseY+(t.clientY-_cropStartY); clamp(); _applyCropTransform(); },{passive:true});
-    document.addEventListener("touchend",   () => { _cropDragging=false; });
+    // Wheel zoom
+    wrap.addEventListener("wheel", e => {
+        e.preventDefault();
+        const prevScale = _cropScale;
+        _cropScale = Math.max(_cropMinScale, Math.min(_cropMinScale*3, _cropScale + (e.deltaY<0?0.05:-0.05)*_cropMinScale));
+        // Zoom toward center of wrap
+        const cx = CROP_SIZE/2, cy = CROP_SIZE/2;
+        _cropX = cx - (_cropScale/prevScale) * (cx - _cropX);
+        _cropY = cy - (_cropScale/prevScale) * (cy - _cropY);
+        _clampCrop(); _applyCropTransform();
+        const slider=document.getElementById("crop-zoom"); if(slider) slider.value=_cropScale;
+    },{passive:false});
 
-    wrap.addEventListener("wheel", e => { e.preventDefault(); const delta=e.deltaY>0?-0.05:0.05; _cropScale=Math.max(0.5,Math.min(3,_cropScale+delta)); const slider=document.getElementById("crop-zoom"); if(slider)slider.value=_cropScale; clamp(); _applyCropTransform(); },{passive:false});
-    document.getElementById("crop-zoom").addEventListener("input", e => { _cropScale=parseFloat(e.target.value); clamp(); _applyCropTransform(); });
+    // Slider zoom
+    const slider = document.getElementById("crop-zoom");
+    if (slider) slider.addEventListener("input", e => {
+        const prevScale = _cropScale;
+        _cropScale = parseFloat(e.target.value);
+        const cx=CROP_SIZE/2, cy=CROP_SIZE/2;
+        _cropX = cx - (_cropScale/prevScale)*(cx-_cropX);
+        _cropY = cy - (_cropScale/prevScale)*(cy-_cropY);
+        _clampCrop(); _applyCropTransform();
+    });
 }
 
 function closeCropModal() {
-    document.getElementById("avatar-crop-modal").classList.remove("open");
+    document.getElementById("avatar-crop-modal")?.classList.remove("open");
     _cropFile = null;
 }
 
 async function confirmCrop() {
-    if (!_cropFile || !_cropNatW || !_cropNatH) return;
+    if (!_cropFile && !document.getElementById("crop-img")?.src) return;
     const img = document.getElementById("crop-img");
-    if (!img || !img.complete || img.naturalWidth === 0) {
-        showNotification("Image not ready — try again","warn"); return;
-    }
+    if (!img || !img.src || img.src === window.location.href) return;
 
-    // ── Correct source rect in natural image pixels ────────────
-    // The 220×220 wrap clips the image. Image top-left is at (_cropX, _cropY) in wrap CSS px.
-    // Natural pixel at wrap origin = (-_cropX / _cropScale, -_cropY / _cropScale)
-    // Natural pixels visible in 220px circle = 220 / _cropScale
-    const srcX = Math.max(0, -_cropX / _cropScale);
-    const srcY = Math.max(0, -_cropY / _cropScale);
-    const srcW = Math.min(220 / _cropScale, _cropNatW - srcX);
-    const srcH = Math.min(220 / _cropScale, _cropNatH - srcY);
-
-    // Draw on 440×440 canvas (2× retina), circular clip
+    // Draw the visible area onto a 440×440 canvas (2× for retina sharpness)
+    const OUT = 440;
     const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 440;
+    canvas.width = canvas.height = OUT;
     const ctx = canvas.getContext("2d");
-    ctx.clearRect(0,0,440,440);
-    ctx.save();
-    ctx.beginPath(); ctx.arc(220,220,220,0,Math.PI*2); ctx.clip();
-    ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, 440, 440);
-    ctx.restore();
+
+    // Clip to circle
+    ctx.beginPath();
+    ctx.arc(OUT/2, OUT/2, OUT/2, 0, Math.PI*2);
+    ctx.clip();
+
+    // The crop container is CROP_SIZE×CROP_SIZE.
+    // Image is positioned at (_cropX, _cropY) with size (natW*scale, natH*scale).
+    // We want to capture exactly that CROP_SIZE area, scaled 2× for output.
+    const ratio = OUT / CROP_SIZE;
+    ctx.drawImage(
+        img,
+        // source: (0,0) to (natW,natH)
+        -_cropX / _cropScale,        // sx: which pixel of source starts at cropX=0
+        -_cropY / _cropScale,        // sy
+        CROP_SIZE / _cropScale,      // sWidth: how many source pixels = CROP_SIZE display px
+        CROP_SIZE / _cropScale,      // sHeight
+        // dest: fill 440×440 canvas
+        0, 0, OUT, OUT
+    );
 
     const spinner = document.getElementById("avatar-spinner");
     if (spinner) { spinner.classList.remove("hidden"); spinner.classList.add("flex"); }
-    document.getElementById("avatar-crop-modal").classList.remove("open");
+    document.getElementById("avatar-crop-modal")?.classList.remove("open");
 
     canvas.toBlob(async blob => {
         try {
             const u = uid(); if (!u) throw new Error("Not logged in");
             const path = `${u}/avatar.jpg`;
+
+            // Upload: try POST with x-upsert, then PUT
+            let ok = false;
             const token = sb._session?.access_token || SUPA_KEY;
-
-            // POST with x-upsert (preferred)
-            const fd = new FormData();
-            fd.append("file", blob, "avatar.jpg");
-            let r = await fetch(`${SUPA_URL}/storage/v1/object/avatars/${path}`, {
-                method: "POST",
-                headers: { "apikey":SUPA_KEY, "Authorization":`Bearer ${token}`, "x-upsert":"true" },
-                body: fd
-            });
-            // Fallback: PUT
-            if (!r.ok) {
-                r = await fetch(`${SUPA_URL}/storage/v1/object/avatars/${path}`, {
-                    method: "PUT",
-                    headers: { "apikey":SUPA_KEY, "Authorization":`Bearer ${token}`, "Content-Type":"image/jpeg", "x-upsert":"true" },
-                    body: blob
-                });
+            for (const method of ["POST","PUT"]) {
+                const hdrs = { apikey:SUPA_KEY, Authorization:`Bearer ${token}` };
+                let body = blob;
+                if (method === "POST") {
+                    hdrs["x-upsert"] = "true";
+                    const fd = new FormData(); fd.append("file", blob, "avatar.jpg");
+                    body = fd;
+                } else {
+                    hdrs["Content-Type"] = "image/jpeg";
+                }
+                const r = await fetch(`${SUPA_URL}/storage/v1/object/avatars/${path}`, { method, headers:hdrs, body });
+                if (r.ok) { ok=true; break; }
+                console.warn("Avatar upload attempt", method, r.status, await r.text().catch(()=>""));
             }
-            if (!r.ok) {
-                const txt = await r.text().catch(()=>"");
-                throw new Error(`Upload ${r.status}: ${txt.slice(0,80)}`);
-            }
+            if (!ok) throw new Error("Both upload attempts failed");
 
-            const publicUrl = `${SUPA_URL}/storage/v1/object/public/avatars/${path}?cb=${Date.now()}`;
-            sb.update("profiles",`id=eq.${u}`,{avatar_url:publicUrl}).catch(()=>{});
+            // Public URL with cache-bust
+            const publicUrl = `${SUPA_URL}/storage/v1/object/public/avatars/${path}?v=${Date.now()}`;
+
+            // Persist to DB + localStorage
+            sb.update("profiles", `id=eq.${u}`, { avatar_url: publicUrl }).catch(()=>{});
             try { localStorage.setItem("idraft_avatar_url", publicUrl); } catch(e){}
 
-            // Force browser to reload (bypass cache)
-            const a1 = document.getElementById("profile-avatar-img");
-            const a2 = document.getElementById("header-avatar");
-            if (a1) { a1.src = ""; requestAnimationFrame(()=>{ a1.src=publicUrl; }); }
-            if (a2) { a2.src = ""; requestAnimationFrame(()=>{ a2.src=publicUrl; }); }
-            showNotification("Profile photo updated ✓","success");
+            // Update all avatar images immediately — use canvas blob URL for instant display
+            const localUrl = URL.createObjectURL(blob);
+            ["profile-avatar-img","header-avatar"].forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.src = localUrl;   // instant — no network round-trip
+            });
+            // Replace with permanent URL after a short delay (avoids flicker)
+            setTimeout(() => {
+                ["profile-avatar-img","header-avatar"].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (el) el.src = publicUrl;
+                });
+            }, 1500);
+
+            showNotification("Photo updated ✓","success");
         } catch(err) {
-            console.error("Avatar upload:", err);
-            showNotification(`Upload failed: ${err.message}`,"error");
+            console.error("Avatar upload error:", err);
+            showNotification("Upload failed — see console","error");
         } finally {
             if (spinner) { spinner.classList.add("hidden"); spinner.classList.remove("flex"); }
             _cropFile = null;
         }
-    }, "image/jpeg", 0.90);
+    }, "image/jpeg", 0.93);
 }
 function toggleProfileEdit(){document.getElementById("profile-name-display")?.classList.add("hidden");document.getElementById("btn-edit-profile")?.classList.add("hidden");const inp=document.getElementById("profile-name-input");inp?.classList.remove("hidden");if(inp){inp.value=appState.user.name;inp.focus();}document.getElementById("btn-save-profile")?.classList.remove("hidden");}
 function saveProfileName(){const v=document.getElementById("profile-name-input")?.value.trim().replace(/[<>"']/g,"").substring(0,32);if(v){appState.user.name=v;updateUserNameUI();if(uid())sb.update("profiles",`id=eq.${uid()}`,{name:v}).catch(()=>{});}document.getElementById("profile-name-display")?.classList.remove("hidden");document.getElementById("btn-edit-profile")?.classList.remove("hidden");document.getElementById("profile-name-input")?.classList.add("hidden");document.getElementById("btn-save-profile")?.classList.add("hidden");showNotification("Name updated!","success");}
@@ -2654,7 +2720,14 @@ function renderArchive(){
     const st=document.getElementById("performance-statement");
     if(st){if(rate>=80)st.innerHTML=`🔥 <span class="text-white">Excellent!</span> You are crushing it.`;else if(rate>=50)st.innerHTML=`👍 <span class="text-white">Good progress.</span> Keep pushing.`;else st.innerHTML=`⚠️ <span class="text-white">Needs focus.</span> Clear that backlog.`;}
     const tc=document.getElementById("archive-tasks-container");
-    if(tc){tc.innerHTML=done.length?"":`<p class="text-sm text-zinc-400 italic">No completed tasks yet.</p>`;done.forEach(t=>{tc.innerHTML+=`<div class="p-3 bg-zinc-50 rounded-xl border border-zinc-100 flex items-center justify-between group"><div class="flex items-center gap-3 overflow-hidden"><i data-lucide="check-circle-2" class="w-4 h-4 text-green-500 shrink-0"></i><span class="text-sm font-medium text-zinc-600 line-through truncate">${escHtml(t.title)}</span></div><div class="flex gap-1.5 opacity-0 group-hover:opacity-100 shrink-0"><button onclick="undoTask(${t.id})" class="px-3 py-1.5 text-xs font-bold text-zinc-600 hover:text-blue-600 bg-white rounded-lg shadow-sm border border-zinc-200 transition">Undo</button><button onclick="deleteTask(${t.id})" class="p-1.5 text-zinc-300 hover:text-red-500 hover:bg-red-50 bg-white rounded-lg shadow-sm border border-zinc-200 transition" title="Delete permanently"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button></div></div>\`;});}
+    if(tc){
+        tc.innerHTML=done.length?"":`<p class="text-sm text-zinc-400 italic">No completed tasks yet.</p>`;
+        const today7=new Date(Date.now()-7*24*60*60*1000).toISOString().slice(0,10);
+        done.forEach(t=>{
+            const age=t.date&&t.date<today7;
+            tc.innerHTML+=`<div class="p-3 ${age?"bg-red-50 border-red-100":"bg-zinc-50 border-zinc-100"} rounded-xl border flex items-center justify-between group"><div class="flex items-center gap-3 flex-1 overflow-hidden"><i data-lucide="check-circle-2" class="w-4 h-4 text-green-500 shrink-0"></i><span class="text-sm font-medium text-zinc-600 line-through truncate">${escHtml(t.title)}</span>${age?"<span class='text-[9px] font-bold text-red-400 bg-red-100 px-1.5 py-0.5 rounded ml-1 shrink-0'>7d+</span>":""}</div><div class="flex gap-1.5 opacity-0 group-hover:opacity-100 transition shrink-0 ml-2"><button onclick="undoTask(${t.id})" class="px-2.5 py-1.5 text-xs font-bold text-zinc-600 hover:text-blue-600 bg-white rounded-lg shadow-sm border border-zinc-200 transition">Undo</button><button onclick="permanentDeleteTask(${t.id})" class="p-1.5 text-zinc-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition" title="Delete permanently"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button></div></div>`;
+        });
+    }
     const cg=appState.goals.filter(g=>g.status==="completed"),gc=document.getElementById("archive-goals-container");
     if(gc){gc.innerHTML=cg.length?"":`<p class="text-sm text-zinc-400 italic">No completed goals yet.</p>`;cg.forEach(g=>{gc.innerHTML+=`<div class="p-3 bg-zinc-50 rounded-xl border border-zinc-100 flex items-center gap-3"><i data-lucide="target" class="w-4 h-4 text-blue-500"></i><span class="text-sm font-medium text-zinc-700">${escHtml(g.text)}</span></div>`;});}
     lucide.createIcons();
@@ -2670,30 +2743,35 @@ function renderFinance(){
     const set=(id,val)=>{const el=document.getElementById(id);if(el)el.textContent=val;};
     const ltEl=document.getElementById("fin-left-to-spend");
     if(ltEl){ltEl.textContent=(over?"-":"")+Math.abs(left).toLocaleString()+" DH";ltEl.style.color=over?"#ef4444":"";}
-    set("fin-budget-label",budget.toLocaleString());set("fin-spent-total",spent.toLocaleString()+" DH");set("fin-spent-pct",pct+"% of budget");set("fin-bar-max",budget.toLocaleString()+" DH");set("fin-bar-midpoint",Math.round(budget/2).toLocaleString()+" DH");
+    set("fin-budget-label",budget.toLocaleString());set("fin-income-label",income>0?income.toLocaleString():"Not set");set("fin-spent-total",spent.toLocaleString()+" DH");set("fin-spent-pct",pct+"% of budget");set("fin-bar-max",budget.toLocaleString()+" DH");set("fin-bar-midpoint",Math.round(budget/2).toLocaleString()+" DH");
     const bar=document.getElementById("fin-budget-bar");
     if(bar){bar.style.width=pct+"%";bar.className="h-4 rounded-full fin-bar "+(over?"bg-red-500":pct>75?"bg-orange-400":"bg-green-500");}
     const txCount=appState.finance.expenses.length, avg=txCount?Math.round(spent/txCount):0;
     set("fin-tx-count",txCount);set("fin-avg",avg.toLocaleString()+" DH");
-    // Savings = income minus what you actually spent (expenses logged)
-    // Only meaningful when income is set AND there are expenses
-    const hasExpenses = appState.finance.expenses.length > 0;
-    const saved = Math.max(0, income - spent);                         // DH saved
-    const savingsRate = (income > 0 && hasExpenses)
-        ? Math.max(0, Math.round(saved / income * 100))
-        : 0;                                                           // 0% until data exists
-    const srEl=document.getElementById("fin-savings-rate");
-    if(srEl){
-        srEl.textContent = savingsRate + "%";
-        srEl.className = "text-3xl font-black " + (savingsRate>=20?"text-green-500":savingsRate>=10?"text-orange-500":"text-red-500");
+    // Savings rate: only meaningful when income is set AND there are expenses
+    // "How much of your income are you saving?" = (income - spent) / income
+    // Guard: if no expenses logged yet → show pending state, not 100%
+    let savingsRateStr = "—", savingsColor = "text-zinc-400", savingsSubtext = "";
+    if (income > 0) {
+        if (appState.finance.expenses.length === 0) {
+            savingsRateStr = "—";
+            savingsColor = "text-zinc-400";
+            savingsSubtext = "Log expenses to see your rate";
+        } else {
+            const savedDH = Math.max(0, income - spent);
+            const rate = Math.round(savedDH / income * 100);
+            savingsRateStr = rate + "%";
+            savingsColor = rate >= 20 ? "text-green-500" : rate >= 10 ? "text-orange-500" : "text-red-500";
+            savingsSubtext = savedDH.toLocaleString() + " DH saved of " + income.toLocaleString() + " DH income";
+        }
+    } else {
+        savingsRateStr = "—";
+        savingsSubtext = "Set your income in budget settings";
     }
-    // Also show DH amount saved
-    const savedAmtEl = document.getElementById("fin-saved-amount");
-    if(savedAmtEl) {
-        savedAmtEl.textContent = hasExpenses
-            ? `${saved.toLocaleString()} DH saved of ${income.toLocaleString()} DH income`
-            : "Log expenses to calculate savings";
-    }
+    const srEl = document.getElementById("fin-savings-rate");
+    if (srEl) { srEl.textContent = savingsRateStr; srEl.className = "text-3xl font-black " + savingsColor; }
+    const srSub = document.getElementById("fin-savings-sub");
+    if (srSub) srSub.textContent = savingsSubtext;
     renderBuckets();renderTransactions();renderProjectSpending();lucide.createIcons();
 }
 function renderBuckets(){
@@ -2765,6 +2843,8 @@ async function saveBudget(){
     const b=parseFloat(document.getElementById("budget-input")?.value||"0");
     const inc=parseFloat(document.getElementById("income-input")?.value||"0");
     if(!b||b<=0) return showNotification("Enter a valid budget","warn");
+    // Income must be >= budget (you can't spend more than you earn as a budget)
+    if(inc > 0 && inc < b) return showNotification("Income must be ≥ budget (you spend from income)","warn");
     appState.finance.monthlyBudget=b;
     if(inc>0)appState.finance.monthlyIncome=inc;
     if(uid()) await sb.upsert("finance_settings",{user_id:uid(),monthly_budget:b,monthly_income:inc>0?inc:appState.finance.monthlyIncome}).catch(()=>{});
@@ -2839,6 +2919,30 @@ async function deleteTask(id){
     _fullRefresh();
     showNotification("Task deleted","warn");
     if(uid()) sb.delete("tasks",`id=eq.${id}&user_id=eq.${uid()}`).catch(()=>{});
+}
+
+async function permanentDeleteTask(id) {
+    if (!confirm("Permanently delete this task? This cannot be undone.")) return;
+    appState.tasks = appState.tasks.filter(t => t.id !== id);
+    _checkAndUnlockAchievements();
+    _fullRefresh();
+    showNotification("Task permanently deleted", "warn");
+    if (uid()) sb.delete("tasks", `id=eq.${id}&user_id=eq.${uid()}`).catch(()=>{});
+}
+
+function _autoPurgeOldTasks() {
+    // Auto-delete completed tasks older than 7 days
+    const cutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0,10);
+    const toDelete = appState.tasks.filter(t => t.status === "completed" && t.date && t.date < cutoff);
+    if (!toDelete.length) return;
+    toDelete.forEach(t => {
+        appState.tasks = appState.tasks.filter(x => x.id !== t.id);
+        if (uid()) sb.delete("tasks", `id=eq.${t.id}&user_id=eq.${uid()}`).catch(()=>{});
+    });
+    if (toDelete.length > 0) {
+        showNotification(`Auto-purged ${toDelete.length} task${toDelete.length>1?"s":""} older than 7 days`, "info");
+        _fullRefresh();
+    }
 }
 async function promoteToSpotlight(id){
     appState.tasks.forEach(t=>{if(t.isSpotlight&&t.id!==id){t.isSpotlight=false;if(uid())sb.update("tasks",`id=eq.${t.id}&user_id=eq.${uid()}`,{is_spotlight:false}).catch(()=>{});}});
@@ -3086,8 +3190,7 @@ bootApp();
                 <input type="number" id="budget-input" min="100" step="100" placeholder="e.g. 4000" class="w-full border border-zinc-200 rounded-xl px-4 py-3 text-2xl font-black focus:outline-none focus:ring-2 focus:ring-zinc-900 placeholder:text-zinc-200">
             </div>
             <div class="mb-6">
-                <label class="text-xs font-bold text-zinc-500 uppercase tracking-wide mb-1 block">Monthly income (DH) — your salary</label>
-                <p class="text-[10px] text-zinc-400 mb-1">Savings = Income − Expenses. Set income ≥ budget.</p>
+                <label class="text-xs font-bold text-zinc-500 uppercase tracking-wide mb-1 block">Monthly income (DH) — for savings rate</label>
                 <input type="number" id="income-input" min="100" step="100" placeholder="e.g. 6000" class="w-full border border-zinc-200 rounded-xl px-4 py-3 text-lg font-bold focus:outline-none focus:ring-2 focus:ring-zinc-900 placeholder:text-zinc-200">
             </div>
             <div class="flex gap-3">
