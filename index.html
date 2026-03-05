@@ -897,7 +897,8 @@
                                 <div class="flex items-end gap-2">
                                     <span id="fin-savings-rate" class="text-3xl font-black text-green-600">0%</span>
                                 </div>
-                                <p class="text-xs text-zinc-400">Target: <span class="font-bold text-zinc-700">20%</span> of income</p>
+                                <p class="text-xs text-zinc-400 mb-1">Target: <span class="font-bold text-zinc-700">20%</span> of income</p>
+                                <p class="text-[11px] text-zinc-400" id="fin-saved-amount">Log expenses to calculate savings</p>
                             </div>
                         </div>
                     </div>
@@ -1928,12 +1929,8 @@ function applyDarkMode(on) {
         lineChart.update();
     }
     if (doughnutChart) {
-        const pct = doughnutChart.data.datasets[0].data[0] || 0;
-        const done100 = pct >= 100;
-        const doneColor = on ? "#4ade80" : "#22c55e";
-        const pendColor = on ? "#3f3f46" : "#e4e4e7";
-        doughnutChart.data.datasets[0].backgroundColor = done100 ? [doneColor, doneColor] : [doneColor, pendColor];
-        doughnutChart.update();
+        // Re-run updateDashboardStats to repaint with correct dark/light colors
+        updateDashboardStats();
     }
 }
 
@@ -2032,15 +2029,22 @@ function updateDashboardStats() {
     if (el("total-projects-stopped")) el("total-projects-stopped").textContent = projDone;
 
     if (doughnutChart) {
-        // Use percentage [pct, 100-pct] so 100% = exactly full circle
-        const pctDone = donePct;
-        const pctLeft = 100 - pctDone;
-        doughnutChart.data.datasets[0].data = [pctDone, pctLeft > 0 ? pctLeft : 0];
-        // When 100%: single full segment, no gap
-        doughnutChart.data.datasets[0].backgroundColor = pctDone === 100
-            ? ["#22c55e", "#22c55e"]
-            : (doughnutChart.data.datasets[0].backgroundColor[0] === "#4ade80"
-               ? ["#4ade80", "#3f3f46"] : ["#22c55e", "#e4e4e7"]);
+        const isDark = document.documentElement.classList.contains("dark");
+        const greenColor  = isDark ? "#4ade80" : "#22c55e";
+        const emptyColor  = isDark ? "#3f3f46" : "#e4e4e7";
+
+        if (total === 0) {
+            // No tasks at all — fully grey
+            doughnutChart.data.datasets[0].data = [0, 100];
+            doughnutChart.data.datasets[0].backgroundColor = [emptyColor, emptyColor];
+        } else if (donePct >= 100) {
+            // 100% — solid full green circle (two identical segments, no gap)
+            doughnutChart.data.datasets[0].data = [100, 0];
+            doughnutChart.data.datasets[0].backgroundColor = [greenColor, greenColor];
+        } else {
+            doughnutChart.data.datasets[0].data = [donePct, 100 - donePct];
+            doughnutChart.data.datasets[0].backgroundColor = [greenColor, emptyColor];
+        }
         doughnutChart.update();
         if (el("month-progress-val")) el("month-progress-val").textContent = donePct + "%";
     }
@@ -2376,12 +2380,19 @@ function uploadAvatar(input) {
         img.onload = () => {
             _cropNatW = img.naturalWidth;
             _cropNatH = img.naturalHeight;
-            // Reset position + scale to fit the circle (220px)
+            // Scale so image exactly COVERS the 220×220 circle — no white gaps
             _cropScale = Math.max(220 / _cropNatW, 220 / _cropNatH);
+            // Center the image inside the circle
             _cropX = (220 - _cropNatW * _cropScale) / 2;
             _cropY = (220 - _cropNatH * _cropScale) / 2;
             _applyCropTransform();
-            document.getElementById("crop-zoom").value = _cropScale;
+            // Set slider min/max dynamically relative to the cover scale
+            const slider = document.getElementById("crop-zoom");
+            if (slider) {
+                slider.min   = (_cropScale * 0.9).toFixed(3);   // slight zoom-out allowed
+                slider.max   = (_cropScale * 5.0).toFixed(3);   // 5× zoom in
+                slider.value = _cropScale;
+            }
         };
         img.src = e.target.result;
     };
@@ -2402,9 +2413,14 @@ function _initCropDrag() {
     wrap._cropBound = true;
 
     const clamp = () => {
-        const w = _cropNatW * _cropScale, h = _cropNatH * _cropScale;
-        _cropX = Math.min(0, Math.max(220 - w, _cropX));
-        _cropY = Math.min(0, Math.max(220 - h, _cropY));
+        const w = _cropNatW * _cropScale;
+        const h = _cropNatH * _cropScale;
+        // Image must cover the circle: X range is [220-w, 0], Y range is [220-h, 0]
+        // But if image smaller than circle (shouldn't happen at cover scale): center it
+        if (w >= 220) { _cropX = Math.min(0, Math.max(220 - w, _cropX)); }
+        else          { _cropX = (220 - w) / 2; }
+        if (h >= 220) { _cropY = Math.min(0, Math.max(220 - h, _cropY)); }
+        else          { _cropY = (220 - h) / 2; }
     };
 
     wrap.addEventListener("mousedown",  e => { _cropDragging=true; _cropStartX=e.clientX; _cropStartY=e.clientY; _cropBaseX=_cropX; _cropBaseY=_cropY; e.preventDefault(); });
@@ -2425,15 +2441,30 @@ function closeCropModal() {
 }
 
 async function confirmCrop() {
-    if (!_cropFile) return;
-    // Draw cropped 220×220 onto canvas → blob → upload
+    if (!_cropFile || !_cropNatW || !_cropNatH) return;
     const img = document.getElementById("crop-img");
+    if (!img || !img.complete || img.naturalWidth === 0) {
+        showNotification("Image not ready — try again","warn"); return;
+    }
+
+    // ── Correct source rect in natural image pixels ────────────
+    // The 220×220 wrap clips the image. Image top-left is at (_cropX, _cropY) in wrap CSS px.
+    // Natural pixel at wrap origin = (-_cropX / _cropScale, -_cropY / _cropScale)
+    // Natural pixels visible in 220px circle = 220 / _cropScale
+    const srcX = Math.max(0, -_cropX / _cropScale);
+    const srcY = Math.max(0, -_cropY / _cropScale);
+    const srcW = Math.min(220 / _cropScale, _cropNatW - srcX);
+    const srcH = Math.min(220 / _cropScale, _cropNatH - srcY);
+
+    // Draw on 440×440 canvas (2× retina), circular clip
     const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 440; // 2× for retina
+    canvas.width = canvas.height = 440;
     const ctx = canvas.getContext("2d");
+    ctx.clearRect(0,0,440,440);
+    ctx.save();
     ctx.beginPath(); ctx.arc(220,220,220,0,Math.PI*2); ctx.clip();
-    const scale2 = _cropScale * 2;
-    ctx.drawImage(img, _cropX*2, _cropY*2, _cropNatW*scale2, _cropNatH*scale2);
+    ctx.drawImage(img, srcX, srcY, srcW, srcH, 0, 0, 440, 440);
+    ctx.restore();
 
     const spinner = document.getElementById("avatar-spinner");
     if (spinner) { spinner.classList.remove("hidden"); spinner.classList.add("flex"); }
@@ -2443,35 +2474,47 @@ async function confirmCrop() {
         try {
             const u = uid(); if (!u) throw new Error("Not logged in");
             const path = `${u}/avatar.jpg`;
-            // Try upsert via POST first, fallback to PUT
-            let ok = false;
-            for (const method of ["POST","PUT"]) {
-                const headers = { "apikey":SUPA_KEY, "Authorization":`Bearer ${sb._session?.access_token||SUPA_KEY}` };
-                if (method === "POST") headers["x-upsert"] = "true"; else headers["Content-Type"] = "image/jpeg";
-                const r = await fetch(`${SUPA_URL}/storage/v1/object/avatars/${path}`,
-                    { method, headers, body: method==="POST" ? (() => { const fd=new FormData(); fd.append("file",blob,"avatar.jpg"); return fd; })() : blob });
-                if (r.ok) { ok=true; break; }
-            }
-            if (!ok) throw new Error("Upload failed");
+            const token = sb._session?.access_token || SUPA_KEY;
 
-            // Persist URL to profiles table + localStorage
-            const publicUrl = `${SUPA_URL}/storage/v1/object/public/avatars/${path}?t=${Date.now()}`;
+            // POST with x-upsert (preferred)
+            const fd = new FormData();
+            fd.append("file", blob, "avatar.jpg");
+            let r = await fetch(`${SUPA_URL}/storage/v1/object/avatars/${path}`, {
+                method: "POST",
+                headers: { "apikey":SUPA_KEY, "Authorization":`Bearer ${token}`, "x-upsert":"true" },
+                body: fd
+            });
+            // Fallback: PUT
+            if (!r.ok) {
+                r = await fetch(`${SUPA_URL}/storage/v1/object/avatars/${path}`, {
+                    method: "PUT",
+                    headers: { "apikey":SUPA_KEY, "Authorization":`Bearer ${token}`, "Content-Type":"image/jpeg", "x-upsert":"true" },
+                    body: blob
+                });
+            }
+            if (!r.ok) {
+                const txt = await r.text().catch(()=>"");
+                throw new Error(`Upload ${r.status}: ${txt.slice(0,80)}`);
+            }
+
+            const publicUrl = `${SUPA_URL}/storage/v1/object/public/avatars/${path}?cb=${Date.now()}`;
             sb.update("profiles",`id=eq.${u}`,{avatar_url:publicUrl}).catch(()=>{});
             try { localStorage.setItem("idraft_avatar_url", publicUrl); } catch(e){}
 
+            // Force browser to reload (bypass cache)
             const a1 = document.getElementById("profile-avatar-img");
             const a2 = document.getElementById("header-avatar");
-            if (a1) a1.src = publicUrl;
-            if (a2) a2.src = publicUrl;
-            showNotification("Photo updated ✓","success");
+            if (a1) { a1.src = ""; requestAnimationFrame(()=>{ a1.src=publicUrl; }); }
+            if (a2) { a2.src = ""; requestAnimationFrame(()=>{ a2.src=publicUrl; }); }
+            showNotification("Profile photo updated ✓","success");
         } catch(err) {
             console.error("Avatar upload:", err);
-            showNotification("Upload failed — check console","error");
+            showNotification(`Upload failed: ${err.message}`,"error");
         } finally {
             if (spinner) { spinner.classList.add("hidden"); spinner.classList.remove("flex"); }
             _cropFile = null;
         }
-    }, "image/jpeg", 0.92);
+    }, "image/jpeg", 0.90);
 }
 function toggleProfileEdit(){document.getElementById("profile-name-display")?.classList.add("hidden");document.getElementById("btn-edit-profile")?.classList.add("hidden");const inp=document.getElementById("profile-name-input");inp?.classList.remove("hidden");if(inp){inp.value=appState.user.name;inp.focus();}document.getElementById("btn-save-profile")?.classList.remove("hidden");}
 function saveProfileName(){const v=document.getElementById("profile-name-input")?.value.trim().replace(/[<>"']/g,"").substring(0,32);if(v){appState.user.name=v;updateUserNameUI();if(uid())sb.update("profiles",`id=eq.${uid()}`,{name:v}).catch(()=>{});}document.getElementById("profile-name-display")?.classList.remove("hidden");document.getElementById("btn-edit-profile")?.classList.remove("hidden");document.getElementById("profile-name-input")?.classList.add("hidden");document.getElementById("btn-save-profile")?.classList.add("hidden");showNotification("Name updated!","success");}
@@ -2611,7 +2654,7 @@ function renderArchive(){
     const st=document.getElementById("performance-statement");
     if(st){if(rate>=80)st.innerHTML=`🔥 <span class="text-white">Excellent!</span> You are crushing it.`;else if(rate>=50)st.innerHTML=`👍 <span class="text-white">Good progress.</span> Keep pushing.`;else st.innerHTML=`⚠️ <span class="text-white">Needs focus.</span> Clear that backlog.`;}
     const tc=document.getElementById("archive-tasks-container");
-    if(tc){tc.innerHTML=done.length?"":`<p class="text-sm text-zinc-400 italic">No completed tasks yet.</p>`;done.forEach(t=>{tc.innerHTML+=`<div class="p-3 bg-zinc-50 rounded-xl border border-zinc-100 flex items-center justify-between group"><div class="flex items-center gap-3"><i data-lucide="check-circle-2" class="w-4 h-4 text-green-500 shrink-0"></i><span class="text-sm font-medium text-zinc-600 line-through">${escHtml(t.title)}</span></div><button onclick="undoTask(${t.id})" class="opacity-0 group-hover:opacity-100 px-3 py-1.5 text-xs font-bold text-zinc-600 hover:text-blue-600 bg-white rounded-lg shadow-sm border border-zinc-200 transition">Undo</button></div>`;});}
+    if(tc){tc.innerHTML=done.length?"":`<p class="text-sm text-zinc-400 italic">No completed tasks yet.</p>`;done.forEach(t=>{tc.innerHTML+=`<div class="p-3 bg-zinc-50 rounded-xl border border-zinc-100 flex items-center justify-between group"><div class="flex items-center gap-3 overflow-hidden"><i data-lucide="check-circle-2" class="w-4 h-4 text-green-500 shrink-0"></i><span class="text-sm font-medium text-zinc-600 line-through truncate">${escHtml(t.title)}</span></div><div class="flex gap-1.5 opacity-0 group-hover:opacity-100 shrink-0"><button onclick="undoTask(${t.id})" class="px-3 py-1.5 text-xs font-bold text-zinc-600 hover:text-blue-600 bg-white rounded-lg shadow-sm border border-zinc-200 transition">Undo</button><button onclick="deleteTask(${t.id})" class="p-1.5 text-zinc-300 hover:text-red-500 hover:bg-red-50 bg-white rounded-lg shadow-sm border border-zinc-200 transition" title="Delete permanently"><i data-lucide="trash-2" class="w-3.5 h-3.5"></i></button></div></div>\`;});}
     const cg=appState.goals.filter(g=>g.status==="completed"),gc=document.getElementById("archive-goals-container");
     if(gc){gc.innerHTML=cg.length?"":`<p class="text-sm text-zinc-400 italic">No completed goals yet.</p>`;cg.forEach(g=>{gc.innerHTML+=`<div class="p-3 bg-zinc-50 rounded-xl border border-zinc-100 flex items-center gap-3"><i data-lucide="target" class="w-4 h-4 text-blue-500"></i><span class="text-sm font-medium text-zinc-700">${escHtml(g.text)}</span></div>`;});}
     lucide.createIcons();
@@ -2632,9 +2675,25 @@ function renderFinance(){
     if(bar){bar.style.width=pct+"%";bar.className="h-4 rounded-full fin-bar "+(over?"bg-red-500":pct>75?"bg-orange-400":"bg-green-500");}
     const txCount=appState.finance.expenses.length, avg=txCount?Math.round(spent/txCount):0;
     set("fin-tx-count",txCount);set("fin-avg",avg.toLocaleString()+" DH");
-    const savingsRate=income>0?Math.max(0,Math.round((income-spent)/income*100)):0;
+    // Savings = income minus what you actually spent (expenses logged)
+    // Only meaningful when income is set AND there are expenses
+    const hasExpenses = appState.finance.expenses.length > 0;
+    const saved = Math.max(0, income - spent);                         // DH saved
+    const savingsRate = (income > 0 && hasExpenses)
+        ? Math.max(0, Math.round(saved / income * 100))
+        : 0;                                                           // 0% until data exists
     const srEl=document.getElementById("fin-savings-rate");
-    if(srEl){srEl.textContent=savingsRate+"%";srEl.className="text-3xl font-black "+(savingsRate>=20?"text-green-500":savingsRate>=10?"text-orange-500":"text-red-500");}
+    if(srEl){
+        srEl.textContent = savingsRate + "%";
+        srEl.className = "text-3xl font-black " + (savingsRate>=20?"text-green-500":savingsRate>=10?"text-orange-500":"text-red-500");
+    }
+    // Also show DH amount saved
+    const savedAmtEl = document.getElementById("fin-saved-amount");
+    if(savedAmtEl) {
+        savedAmtEl.textContent = hasExpenses
+            ? `${saved.toLocaleString()} DH saved of ${income.toLocaleString()} DH income`
+            : "Log expenses to calculate savings";
+    }
     renderBuckets();renderTransactions();renderProjectSpending();lucide.createIcons();
 }
 function renderBuckets(){
@@ -3027,7 +3086,8 @@ bootApp();
                 <input type="number" id="budget-input" min="100" step="100" placeholder="e.g. 4000" class="w-full border border-zinc-200 rounded-xl px-4 py-3 text-2xl font-black focus:outline-none focus:ring-2 focus:ring-zinc-900 placeholder:text-zinc-200">
             </div>
             <div class="mb-6">
-                <label class="text-xs font-bold text-zinc-500 uppercase tracking-wide mb-1 block">Monthly income (DH) — for savings rate</label>
+                <label class="text-xs font-bold text-zinc-500 uppercase tracking-wide mb-1 block">Monthly income (DH) — your salary</label>
+                <p class="text-[10px] text-zinc-400 mb-1">Savings = Income − Expenses. Set income ≥ budget.</p>
                 <input type="number" id="income-input" min="100" step="100" placeholder="e.g. 6000" class="w-full border border-zinc-200 rounded-xl px-4 py-3 text-lg font-bold focus:outline-none focus:ring-2 focus:ring-zinc-900 placeholder:text-zinc-200">
             </div>
             <div class="flex gap-3">
@@ -3069,4 +3129,3 @@ bootApp();
 
 </body>
 </html>
-
