@@ -265,6 +265,20 @@
         .dark #notif-panel [style*="border-bottom"] { border-color:#27272a !important; }
         /* Avatar overlay */
         .dark #profile-avatar-img { border-color:#3f3f46 !important; }
+
+        /* ── Avatar Crop Modal ── */
+        #avatar-crop-modal {
+            position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:600;
+            display:none; align-items:center; justify-content:center;
+        }
+        #avatar-crop-modal.open { display:flex; }
+        #crop-canvas-wrap {
+            position:relative; overflow:hidden; border-radius:50%;
+            width:220px; height:220px; cursor:move; user-select:none;
+            border:3px solid #22c55e; box-shadow:0 0 0 3000px rgba(0,0,0,0.6);
+            flex-shrink:0;
+        }
+        #crop-img { position:absolute; transform-origin:0 0; }
         /* Finance bucket card hover */
         .bucket-card { transition:transform .15s,box-shadow .15s; }
         .bucket-card:hover { transform:translateY(-3px); box-shadow:0 8px 24px rgba(0,0,0,.08); }
@@ -789,7 +803,7 @@
                                     <span class="text-[10px] text-green-400 font-bold bg-green-400/10 px-2 py-0.5 rounded mt-2 inline-block">+2 this month</span>
                                 </div>
                                 <div class="col-span-2 w-full h-px bg-zinc-700"></div>
-                                <div class="col-span-2"><p class="text-sm text-zinc-400 mb-2">Current Productivity Streak</p><div class="flex items-center gap-2"><i data-lucide="flame" class="w-6 h-6 text-orange-400"></i><span class="text-2xl font-bold">5 Days</span></div></div>
+                                <div class="col-span-2"><p class="text-sm text-zinc-400 mb-2">Productivity Streak</p><div class="flex items-center gap-3"><div class="w-10 h-10 bg-orange-500/20 rounded-xl flex items-center justify-center"><i data-lucide="flame" class="w-6 h-6 text-orange-400"></i></div><div><span class="text-2xl font-bold" id="profile-streak">0</span><span class="text-sm text-zinc-400 ml-1">days</span><p class="text-[10px] text-zinc-500 mt-0.5" id="streak-label">Start a streak today!</p></div></div></div>
                             </div>
                         </div>
                     </div>
@@ -1060,6 +1074,8 @@
                         <option value="3">Wednesday</option>
                         <option value="4">Thursday</option>
                         <option value="5">Friday</option>
+                        <option value="6">Saturday</option>
+                        <option value="7">Sunday</option>
                     </select>
                 </div>
                 <div>
@@ -1137,6 +1153,30 @@
     </div>
 
     <!-- Toast Container -->
+    <!-- ═══ AVATAR CROP MODAL ═══ -->
+    <div id="avatar-crop-modal">
+        <div class="bg-white rounded-[2rem] p-8 shadow-2xl max-w-sm w-full text-center mx-4" style="z-index:601;position:relative">
+            <h3 class="text-lg font-bold text-zinc-900 mb-2">Position your photo</h3>
+            <p class="text-xs text-zinc-400 mb-6">Drag to reposition · Pinch/scroll to zoom</p>
+            <div class="flex justify-center mb-6">
+                <div id="crop-canvas-wrap">
+                    <img id="crop-img" src="" alt="" draggable="false">
+                </div>
+            </div>
+            <div class="flex items-center gap-3 mb-6 px-2">
+                <i data-lucide="zoom-out" class="w-4 h-4 text-zinc-400 shrink-0"></i>
+                <input id="crop-zoom" type="range" min="0.5" max="3" step="0.01" value="1" class="flex-1 accent-zinc-900">
+                <i data-lucide="zoom-in" class="w-4 h-4 text-zinc-400 shrink-0"></i>
+            </div>
+            <div class="flex gap-3">
+                <button onclick="closeCropModal()" class="flex-1 py-3 bg-zinc-100 text-zinc-700 font-bold rounded-xl hover:bg-zinc-200 transition text-sm">Cancel</button>
+                <button onclick="confirmCrop()" class="flex-1 py-3 bg-zinc-900 text-white font-bold rounded-xl hover:bg-zinc-800 transition text-sm flex items-center justify-center gap-2">
+                    <i data-lucide="check" class="w-4 h-4"></i> Apply
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- ═══ NOTIFICATION CENTER PANEL ═══ -->
     <div id="notif-panel" role="dialog" aria-label="Notifications">
         <div class="flex items-center justify-between px-5 py-4" style="border-bottom:1px solid #f0f0f0">
@@ -1465,10 +1505,11 @@ function initCharts() {
     if (dCtx) {
         doughnutChart = new Chart(dCtx, {
             type: "doughnut",
-            data: { labels:["Done","Pending"], datasets:[{ data:[0,1], backgroundColor:["#22c55e","#e4e4e7"], borderWidth:0, cutout:"78%" }] },
+            data: { labels:["Done","Pending"], datasets:[{ data:[0,100], backgroundColor:["#22c55e","#e4e4e7"], borderWidth:0, cutout:"78%", borderRadius:4 }] },
             options: { responsive:true, maintainAspectRatio:false,
                 plugins:{legend:{display:false},tooltip:{enabled:false}},
-                animation:{animateScale:true,duration:600} }
+                rotation:-90, circumference:360,
+                animation:{animateRotate:true,duration:700} }
         });
     }
 }
@@ -1599,6 +1640,15 @@ async function enterApp(user, profile) {
     app.classList.remove("opacity-0","pointer-events-none");
 
     await loadAllData();
+
+    // Load avatar from profiles table if stored there
+    try {
+        const p = await sb.select("profiles", `id=eq.${user.id}`);
+        if (p && p[0]?.avatar_url) {
+            try { localStorage.setItem("idraft_avatar_url", p[0].avatar_url); } catch(e){}
+        }
+    } catch(e){}
+
     initCharts();
     updateUserNameUI();
 
@@ -1878,7 +1928,11 @@ function applyDarkMode(on) {
         lineChart.update();
     }
     if (doughnutChart) {
-        doughnutChart.data.datasets[0].backgroundColor = [on ? "#4ade80" : "#22c55e", on ? "#3f3f46" : "#e4e4e7"];
+        const pct = doughnutChart.data.datasets[0].data[0] || 0;
+        const done100 = pct >= 100;
+        const doneColor = on ? "#4ade80" : "#22c55e";
+        const pendColor = on ? "#3f3f46" : "#e4e4e7";
+        doughnutChart.data.datasets[0].backgroundColor = done100 ? [doneColor, doneColor] : [doneColor, pendColor];
         doughnutChart.update();
     }
 }
@@ -1978,14 +2032,37 @@ function updateDashboardStats() {
     if (el("total-projects-stopped")) el("total-projects-stopped").textContent = projDone;
 
     if (doughnutChart) {
-        doughnutChart.data.datasets[0].data = [done > 0 ? done : 0, active > 0 ? active : 1];
+        // Use percentage [pct, 100-pct] so 100% = exactly full circle
+        const pctDone = donePct;
+        const pctLeft = 100 - pctDone;
+        doughnutChart.data.datasets[0].data = [pctDone, pctLeft > 0 ? pctLeft : 0];
+        // When 100%: single full segment, no gap
+        doughnutChart.data.datasets[0].backgroundColor = pctDone === 100
+            ? ["#22c55e", "#22c55e"]
+            : (doughnutChart.data.datasets[0].backgroundColor[0] === "#4ade80"
+               ? ["#4ade80", "#3f3f46"] : ["#22c55e", "#e4e4e7"]);
         doughnutChart.update();
         if (el("month-progress-val")) el("month-progress-val").textContent = donePct + "%";
     }
     if (lineChart) {
-        // Only today's slot (index 6 = "Sun"/today) — no duplicate spike
-        lineChart.data.datasets[0].data = [0, 0, 0, 0, 0, 0, done];
-        lineChart.data.datasets[1].data = [0, 0, 0, 0, 0, 0, active];
+        // Build real 7-day history from task dates
+        const today = new Date(); today.setHours(0,0,0,0);
+        const dayLabels = [];
+        const dayDone   = [];
+        const dayActive = [];
+        for (let i = 6; i >= 0; i--) {
+            const d = new Date(today); d.setDate(today.getDate() - i);
+            const iso = d.toISOString().slice(0,10);
+            // label as Mon/Tue/... or "Today"
+            dayLabels.push(i===0 ? "Today" : ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getDay()]);
+            // tasks created on this day that are completed
+            const tasksThisDay = appState.tasks.filter(t => (t.date||"")=== iso);
+            dayDone.push(tasksThisDay.filter(t=>t.status==="completed").length);
+            dayActive.push(tasksThisDay.filter(t=>t.status==="active").length);
+        }
+        lineChart.data.labels = dayLabels;
+        lineChart.data.datasets[0].data = dayDone;
+        lineChart.data.datasets[1].data = dayActive;
         lineChart.update();
     }
 }
@@ -2026,7 +2103,7 @@ function renderTasks() {
         const d = document.createElement("div");
         d.className = "bg-white p-5 rounded-3xl shadow-sm border border-zinc-100 shrink-0 w-[240px] flex flex-col justify-between transition hover:-translate-y-1 hover:shadow-md cursor-grab active:cursor-grabbing select-none";
         d.draggable = true; d.dataset.taskId = t.id;
-        d.innerHTML = `<div class="relative"><span class="text-[10px] ${linked?"bg-blue-50 text-blue-600 border-blue-100":"bg-zinc-100 text-zinc-600 border-zinc-200"} px-2 py-0.5 rounded-full border font-bold mb-3 inline-block">${linked?"Project":"Global"}</span><div class="flex justify-between items-start mb-2"><div class="w-10 h-10 bg-zinc-50 rounded-xl border border-zinc-100 flex items-center justify-center"><i data-lucide="${t.icon||"zap"}" class="w-5 h-5 text-zinc-600"></i></div><div class="flex gap-1"><button onclick="markTaskDone(${t.id})" class="text-zinc-300 hover:text-green-500 hover:bg-green-50 p-1.5 rounded-lg transition" title="Done"><i data-lucide="check-circle-2" class="w-5 h-5"></i></button><button onclick="deleteTask(${t.id})" class="text-zinc-200 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition" title="Delete"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></div><h3 class="font-bold text-zinc-900 text-sm mb-4 leading-snug">${escHtml(t.title)}${isHigh?` <i data-lucide="flame" class="w-4 h-4 text-orange-500 inline-block"></i>`:""}</h3></div><div class="flex justify-between items-center mt-auto border-t border-zinc-100 pt-3"><span class="text-xs text-zinc-400 font-medium flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${t.date}</span><button onclick="markTaskDone(${t.id})" class="w-8 h-8 bg-zinc-900 text-white rounded-lg flex items-center justify-center hover:bg-zinc-700 transition shadow-sm" title="Complete"><i data-lucide="check" class="w-4 h-4"></i></button></div>`;
+        d.innerHTML = `<div class="relative"><span class="text-[10px] ${linked?"bg-blue-50 text-blue-600 border-blue-100":"bg-zinc-100 text-zinc-600 border-zinc-200"} px-2 py-0.5 rounded-full border font-bold mb-3 inline-block">${linked?"Project":"Global"}</span><div class="flex justify-between items-start mb-2"><div class="w-10 h-10 bg-zinc-50 rounded-xl border border-zinc-100 flex items-center justify-center"><i data-lucide="${t.icon||"zap"}" class="w-5 h-5 text-zinc-600"></i></div><div class="flex gap-1"><button onclick="openEditTask(${t.id})" class="text-zinc-200 hover:text-blue-500 hover:bg-blue-50 p-1.5 rounded-lg transition" title="Edit"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="markTaskDone(${t.id})" class="text-zinc-300 hover:text-green-500 hover:bg-green-50 p-1.5 rounded-lg transition" title="Done"><i data-lucide="check-circle-2" class="w-5 h-5"></i></button><button onclick="deleteTask(${t.id})" class="text-zinc-200 hover:text-red-500 hover:bg-red-50 p-1.5 rounded-lg transition" title="Delete"><i data-lucide="trash-2" class="w-4 h-4"></i></button></div></div><h3 class="font-bold text-zinc-900 text-sm mb-4 leading-snug">${escHtml(t.title)}${isHigh?` <i data-lucide="flame" class="w-4 h-4 text-orange-500 inline-block"></i>`:""}</h3></div><div class="flex justify-between items-center mt-auto border-t border-zinc-100 pt-3"><span class="text-xs text-zinc-400 font-medium flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${t.date}</span><button onclick="markTaskDone(${t.id})" class="w-8 h-8 bg-zinc-900 text-white rounded-lg flex items-center justify-center hover:bg-zinc-700 transition shadow-sm" title="Complete"><i data-lucide="check" class="w-4 h-4"></i></button></div>`;
         c.appendChild(d);
     });
     lucide.createIcons(); initDashDrag();
@@ -2085,7 +2162,7 @@ function renderTasksPage() {
         const row=document.createElement("div");
         row.className=`bg-white border ${isHigh?"border-orange-200":"border-zinc-200"} p-3 rounded-xl hover:shadow-md transition group flex items-center justify-between gap-4 relative overflow-hidden cursor-grab`;
         row.draggable=true; row.dataset.rowId=t.id;
-        row.innerHTML=`${isHigh?`<div class="absolute left-0 top-0 bottom-0 w-1 bg-orange-400 rounded-l-xl"></div>`:""}<div class="flex items-center gap-4 overflow-hidden flex-1 pl-${isHigh?3:2} w-full"><div class="w-10 h-10 ${isHigh?"bg-orange-50 text-orange-600":"bg-zinc-50 text-zinc-600"} rounded-xl border border-zinc-100 flex items-center justify-center shrink-0"><i data-lucide="${t.icon||"zap"}" class="w-5 h-5"></i></div><div class="flex flex-col overflow-hidden"><h4 class="font-bold text-zinc-900 text-sm truncate">${escHtml(t.title)}</h4><p class="text-[10px] text-zinc-400 font-medium flex items-center gap-1 mt-0.5"><i data-lucide="clock" class="w-3 h-3"></i> ${t.date}${proj?` · 📁 ${escHtml(proj.title)}`:""}</p></div></div><div class="flex gap-1.5 opacity-0 group-hover:opacity-100 transition shrink-0"><button onclick="promoteToSpotlight(${t.id})" class="p-2 text-yellow-400 hover:text-yellow-600 hover:bg-yellow-50 rounded-lg transition" title="Pin"><i data-lucide="star" class="w-4 h-4"></i></button><button onclick="deleteTask(${t.id})" class="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button><button onclick="markTaskDone(${t.id})" class="p-2 text-zinc-400 hover:text-green-500 hover:bg-green-50 rounded-lg transition"><i data-lucide="check-circle-2" class="w-4 h-4"></i></button></div>`;
+        row.innerHTML=`${isHigh?`<div class="absolute left-0 top-0 bottom-0 w-1 bg-orange-400 rounded-l-xl"></div>`:""}<div class="flex items-center gap-4 overflow-hidden flex-1 pl-${isHigh?3:2} w-full"><div class="w-10 h-10 ${isHigh?"bg-orange-50 text-orange-600":"bg-zinc-50 text-zinc-600"} rounded-xl border border-zinc-100 flex items-center justify-center shrink-0"><i data-lucide="${t.icon||"zap"}" class="w-5 h-5"></i></div><div class="flex flex-col overflow-hidden"><h4 class="font-bold text-zinc-900 text-sm truncate">${escHtml(t.title)}</h4><p class="text-[10px] text-zinc-400 font-medium flex items-center gap-1 mt-0.5"><i data-lucide="clock" class="w-3 h-3"></i> ${t.date}${proj?` · 📁 ${escHtml(proj.title)}`:""}</p></div></div><div class="flex gap-1.5 opacity-0 group-hover:opacity-100 transition shrink-0"><button onclick="openEditTask(${t.id})" class="p-2 text-zinc-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition" title="Edit"><i data-lucide="edit-2" class="w-4 h-4"></i></button><button onclick="promoteToSpotlight(${t.id})" class="p-2 text-yellow-400 hover:text-yellow-600 hover:bg-yellow-50 rounded-lg transition" title="Pin"><i data-lucide="star" class="w-4 h-4"></i></button><button onclick="deleteTask(${t.id})" class="p-2 text-zinc-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"><i data-lucide="trash-2" class="w-4 h-4"></i></button><button onclick="markTaskDone(${t.id})" class="p-2 text-zinc-400 hover:text-green-500 hover:bg-green-50 rounded-lg transition"><i data-lucide="check-circle-2" class="w-4 h-4"></i></button></div>`;
         queue.appendChild(row);
     });
     appState.goals.forEach(g=>{
@@ -2139,14 +2216,25 @@ function renderProjectsPage() {
 function setCalendarView(v){currentCalendarView=v;renderCalendar();}
 function renderCalendar(){
     const grid=document.getElementById("calendar-grid"); if(!grid) return;
-    const isWeek=currentCalendarView==="week", days=isWeek?[1,2,3,4,5]:[3];
-    const names={1:"Monday",2:"Tuesday",3:"Wednesday",4:"Thursday",5:"Friday"};
+    // 1=Mon..5=Fri, 6=Sat, 7=Sun — real JS day: 0=Sun,1=Mon..6=Sat → map to our 1-7
+    const jsDow = new Date().getDay(); // 0=Sun
+    const todayIdx = jsDow === 0 ? 7 : jsDow; // convert to our 1-7 (Sun=7)
+    const isWeek=currentCalendarView==="week", days=isWeek?[1,2,3,4,5,6,7]:[todayIdx];
+    const names={1:"Monday",2:"Tuesday",3:"Wednesday",4:"Thursday",5:"Friday",6:"Saturday",7:"Sunday"};
+    const isWeekend = d => d===6||d===7;
     ["btn-cal-day","btn-cal-week"].forEach(id=>{const btn=document.getElementById(id);if(btn)btn.className=(id===`btn-cal-${currentCalendarView}`)?"px-4 py-2 bg-white shadow-sm rounded-lg text-sm font-medium text-zinc-900 transition":"px-4 py-2 hover:bg-white rounded-lg text-sm font-medium text-zinc-600 transition";});
-    grid.style.gridTemplateColumns=isWeek?"80px repeat(5, 1fr)":"80px 1fr";
+    grid.style.gridTemplateColumns=isWeek?"80px repeat(7, 1fr)":"80px 1fr";
     grid.style.gridTemplateRows="auto repeat(15, minmax(70px, 1fr))";
     let html=`<div class="bg-zinc-50" style="grid-column:1;grid-row:1;"></div>`;
-    days.forEach((d,i)=>{const isT=d===3;html+=`<div class="cal-header-cell flex flex-col items-center justify-center py-3 ${isT?"text-blue-600 bg-blue-50/50":"text-zinc-900 bg-zinc-50"}" style="grid-column:${i+2};grid-row:1;"><span class="font-bold text-sm">${names[d]}</span>${isT?`<span class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full mt-1 uppercase font-bold">Today</span>`:""}</div>`;});
-    for(let h=8;h<=22;h++){const row=h-8+2,ts=h===12?"12:00":(h>12?`${h-12}:00 PM`:`${h}:00 AM`);html+=`<div class="time-label bg-zinc-50 pr-3 pt-2 font-medium text-[11px] text-zinc-400 text-right" style="grid-column:1;grid-row:${row};">${ts}</div>`;days.forEach((day,i)=>{const isT=day===3;html+=`<div class="cal-cell ${isT?"bg-blue-50/10":"bg-white"} group cursor-pointer hover:bg-zinc-50 transition flex items-center justify-center" style="grid-column:${i+2};grid-row:${row};" onclick="openEventModal(${day},${h})"><i data-lucide="plus" class="w-5 h-5 text-zinc-200 opacity-0 group-hover:opacity-100 transition-opacity"></i></div>`;});}
+    days.forEach((d,i)=>{
+        const isT=d===todayIdx;
+        const isWE=isWeekend(d);
+        html+=`<div class="cal-header-cell flex flex-col items-center justify-center py-3 ${isT?"text-blue-600 bg-blue-50/50":isWE?"text-zinc-400 bg-zinc-50/70":"text-zinc-900 bg-zinc-50"}" style="grid-column:${i+2};grid-row:1;">`
+            +`<span class="font-bold text-sm">${names[d]}</span>`
+            +(isT?`<span class="text-[10px] bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full mt-1 uppercase font-bold">Today</span>`:"")
+            +`</div>`;
+    });
+    for(let h=8;h<=22;h++){const row=h-8+2,ts=h===12?"12:00":(h>12?`${h-12}:00 PM`:`${h}:00 AM`);html+=`<div class="time-label bg-zinc-50 pr-3 pt-2 font-medium text-[11px] text-zinc-400 text-right" style="grid-column:1;grid-row:${row};">${ts}</div>`;days.forEach((day,i)=>{const isT=day===todayIdx;const isWE=isWeekend(day);html+=`<div class="cal-cell ${isT?"bg-blue-50/10":isWE?"bg-zinc-50/50":"bg-white"} group cursor-pointer hover:bg-zinc-50 transition flex items-center justify-center" style="grid-column:${i+2};grid-row:${row};" onclick="openEventModal(${day},${h})"><i data-lucide="plus" class="w-5 h-5 text-zinc-200 opacity-0 group-hover:opacity-100 transition-opacity"></i></div>`;});}
     appState.events.forEach(ev=>{if(!days.includes(ev.day)||ev.startHour<8||ev.startHour>22) return;const col=days.indexOf(ev.day)+2,row=ev.startHour-8+2,span=Math.min(ev.span,22-ev.startHour+1),endH=ev.startHour+span,ts=`${ev.startHour>12?ev.startHour-12:ev.startHour}${ev.startHour>=12?"pm":"am"}-${endH>12?endH-12:endH}${endH>=12?"pm":"am"}`;html+=`<div class="m-[3px] p-3 rounded-xl border shadow-sm ${ev.colorClass} flex flex-col group z-10 hover:shadow-md transition-all cursor-pointer relative overflow-hidden" style="grid-column:${col};grid-row:${row}/span ${span};"><span class="text-xs font-bold leading-tight pr-5">${escHtml(ev.title)}</span><button onclick="deleteEvent(${ev.id});event.stopPropagation();" class="absolute top-1.5 right-1.5 opacity-0 group-hover:opacity-100 text-current hover:bg-black/10 p-1 rounded-md transition"><i data-lucide="x" class="w-3 h-3"></i></button>${span>=2?`<div class="mt-auto text-[10px] opacity-70 font-medium">${ts}</div>`:""}</div>`;});
     grid.innerHTML=html;
     lucide.createIcons();
@@ -2269,90 +2357,247 @@ function _getStoredAvatar() {
     try { return localStorage.getItem("idraft_avatar_url") || null; } catch(e){ return null; }
 }
 
-async function uploadAvatar(input) {
+// ── Avatar Crop State ──────────────────────────────────────────
+let _cropFile = null, _cropX = 0, _cropY = 0, _cropScale = 1;
+let _cropDragging = false, _cropStartX = 0, _cropStartY = 0, _cropBaseX = 0, _cropBaseY = 0;
+let _cropNatW = 0, _cropNatH = 0;
+
+function uploadAvatar(input) {
     const file = input.files?.[0];
     if (!file) return;
-    // Validate
-    if (file.size > 5 * 1024 * 1024) return showNotification("Image too large (max 5 MB)","warn");
+    if (file.size > 8 * 1024 * 1024) return showNotification("Image too large (max 8 MB)","warn");
     if (!file.type.startsWith("image/")) return showNotification("Invalid file type","warn");
+    _cropFile = file;
+    input.value = "";
+
+    const reader = new FileReader();
+    reader.onload = e => {
+        const img = document.getElementById("crop-img");
+        img.onload = () => {
+            _cropNatW = img.naturalWidth;
+            _cropNatH = img.naturalHeight;
+            // Reset position + scale to fit the circle (220px)
+            _cropScale = Math.max(220 / _cropNatW, 220 / _cropNatH);
+            _cropX = (220 - _cropNatW * _cropScale) / 2;
+            _cropY = (220 - _cropNatH * _cropScale) / 2;
+            _applyCropTransform();
+            document.getElementById("crop-zoom").value = _cropScale;
+        };
+        img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
+    document.getElementById("avatar-crop-modal").classList.add("open");
+    lucide.createIcons({ root: document.getElementById("avatar-crop-modal") });
+    _initCropDrag();
+}
+
+function _applyCropTransform() {
+    const img = document.getElementById("crop-img");
+    if (img) img.style.transform = `translate(${_cropX}px,${_cropY}px) scale(${_cropScale})`;
+}
+
+function _initCropDrag() {
+    const wrap = document.getElementById("crop-canvas-wrap");
+    if (!wrap || wrap._cropBound) return;
+    wrap._cropBound = true;
+
+    const clamp = () => {
+        const w = _cropNatW * _cropScale, h = _cropNatH * _cropScale;
+        _cropX = Math.min(0, Math.max(220 - w, _cropX));
+        _cropY = Math.min(0, Math.max(220 - h, _cropY));
+    };
+
+    wrap.addEventListener("mousedown",  e => { _cropDragging=true; _cropStartX=e.clientX; _cropStartY=e.clientY; _cropBaseX=_cropX; _cropBaseY=_cropY; e.preventDefault(); });
+    document.addEventListener("mousemove", e => { if(!_cropDragging) return; _cropX=_cropBaseX+(e.clientX-_cropStartX); _cropY=_cropBaseY+(e.clientY-_cropStartY); clamp(); _applyCropTransform(); });
+    document.addEventListener("mouseup",  () => { _cropDragging=false; });
+
+    wrap.addEventListener("touchstart", e => { const t=e.touches[0]; _cropDragging=true; _cropStartX=t.clientX; _cropStartY=t.clientY; _cropBaseX=_cropX; _cropBaseY=_cropY; e.preventDefault(); },{passive:false});
+    document.addEventListener("touchmove",  e => { if(!_cropDragging) return; const t=e.touches[0]; _cropX=_cropBaseX+(t.clientX-_cropStartX); _cropY=_cropBaseY+(t.clientY-_cropStartY); clamp(); _applyCropTransform(); },{passive:true});
+    document.addEventListener("touchend",   () => { _cropDragging=false; });
+
+    wrap.addEventListener("wheel", e => { e.preventDefault(); const delta=e.deltaY>0?-0.05:0.05; _cropScale=Math.max(0.5,Math.min(3,_cropScale+delta)); const slider=document.getElementById("crop-zoom"); if(slider)slider.value=_cropScale; clamp(); _applyCropTransform(); },{passive:false});
+    document.getElementById("crop-zoom").addEventListener("input", e => { _cropScale=parseFloat(e.target.value); clamp(); _applyCropTransform(); });
+}
+
+function closeCropModal() {
+    document.getElementById("avatar-crop-modal").classList.remove("open");
+    _cropFile = null;
+}
+
+async function confirmCrop() {
+    if (!_cropFile) return;
+    // Draw cropped 220×220 onto canvas → blob → upload
+    const img = document.getElementById("crop-img");
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 440; // 2× for retina
+    const ctx = canvas.getContext("2d");
+    ctx.beginPath(); ctx.arc(220,220,220,0,Math.PI*2); ctx.clip();
+    const scale2 = _cropScale * 2;
+    ctx.drawImage(img, _cropX*2, _cropY*2, _cropNatW*scale2, _cropNatH*scale2);
 
     const spinner = document.getElementById("avatar-spinner");
     if (spinner) { spinner.classList.remove("hidden"); spinner.classList.add("flex"); }
+    document.getElementById("avatar-crop-modal").classList.remove("open");
 
-    try {
-        const u = uid();
-        if (!u) throw new Error("Not logged in");
-
-        // Unique path per user to avoid collisions
-        const ext  = file.name.split(".").pop().toLowerCase().replace(/[^a-z]/g,"") || "jpg";
-        const path = `${u}/avatar.${ext}`;
-
-        // Upload to Supabase Storage "avatars" bucket
-        const formData = new FormData();
-        formData.append("file", file, `avatar.${ext}`);
-
-        const uploadRes = await fetch(
-            `${SUPA_URL}/storage/v1/object/avatars/${path}`,
-            {
-                method: "POST",
-                headers: {
-                    "apikey":        SUPA_KEY,
-                    "Authorization": `Bearer ${sb._session?.access_token || SUPA_KEY}`,
-                    "x-upsert":      "true"
-                },
-                body: formData
+    canvas.toBlob(async blob => {
+        try {
+            const u = uid(); if (!u) throw new Error("Not logged in");
+            const path = `${u}/avatar.jpg`;
+            // Try upsert via POST first, fallback to PUT
+            let ok = false;
+            for (const method of ["POST","PUT"]) {
+                const headers = { "apikey":SUPA_KEY, "Authorization":`Bearer ${sb._session?.access_token||SUPA_KEY}` };
+                if (method === "POST") headers["x-upsert"] = "true"; else headers["Content-Type"] = "image/jpeg";
+                const r = await fetch(`${SUPA_URL}/storage/v1/object/avatars/${path}`,
+                    { method, headers, body: method==="POST" ? (() => { const fd=new FormData(); fd.append("file",blob,"avatar.jpg"); return fd; })() : blob });
+                if (r.ok) { ok=true; break; }
             }
-        );
+            if (!ok) throw new Error("Upload failed");
 
-        if (!uploadRes.ok) {
-            // Try PUT for upsert
-            const putRes = await fetch(
-                `${SUPA_URL}/storage/v1/object/avatars/${path}`,
-                {
-                    method: "PUT",
-                    headers: {
-                        "apikey":        SUPA_KEY,
-                        "Authorization": `Bearer ${sb._session?.access_token || SUPA_KEY}`,
-                        "Content-Type":  file.type
-                    },
-                    body: file
-                }
-            );
-            if (!putRes.ok) throw new Error("Upload failed");
+            // Persist URL to profiles table + localStorage
+            const publicUrl = `${SUPA_URL}/storage/v1/object/public/avatars/${path}?t=${Date.now()}`;
+            sb.update("profiles",`id=eq.${u}`,{avatar_url:publicUrl}).catch(()=>{});
+            try { localStorage.setItem("idraft_avatar_url", publicUrl); } catch(e){}
+
+            const a1 = document.getElementById("profile-avatar-img");
+            const a2 = document.getElementById("header-avatar");
+            if (a1) a1.src = publicUrl;
+            if (a2) a2.src = publicUrl;
+            showNotification("Photo updated ✓","success");
+        } catch(err) {
+            console.error("Avatar upload:", err);
+            showNotification("Upload failed — check console","error");
+        } finally {
+            if (spinner) { spinner.classList.add("hidden"); spinner.classList.remove("flex"); }
+            _cropFile = null;
         }
-
-        // Get public URL
-        const publicUrl = `${SUPA_URL}/storage/v1/object/public/avatars/${path}?t=${Date.now()}`;
-
-        // Cache locally + update UI
-        try { localStorage.setItem("idraft_avatar_url", publicUrl); } catch(e){}
-        const a1 = document.getElementById("profile-avatar-img");
-        const a2 = document.getElementById("header-avatar");
-        if (a1) a1.src = publicUrl;
-        if (a2) a2.src = publicUrl;
-
-        showNotification("Profile photo updated ✓","success");
-    } catch(err) {
-        console.error("Avatar upload error:", err);
-        showNotification("Upload failed — try again","error");
-    } finally {
-        if (spinner) { spinner.classList.add("hidden"); spinner.classList.remove("flex"); }
-        input.value = "";   // reset so same file can be re-uploaded
-    }
+    }, "image/jpeg", 0.92);
 }
 function toggleProfileEdit(){document.getElementById("profile-name-display")?.classList.add("hidden");document.getElementById("btn-edit-profile")?.classList.add("hidden");const inp=document.getElementById("profile-name-input");inp?.classList.remove("hidden");if(inp){inp.value=appState.user.name;inp.focus();}document.getElementById("btn-save-profile")?.classList.remove("hidden");}
 function saveProfileName(){const v=document.getElementById("profile-name-input")?.value.trim().replace(/[<>"']/g,"").substring(0,32);if(v){appState.user.name=v;updateUserNameUI();if(uid())sb.update("profiles",`id=eq.${uid()}`,{name:v}).catch(()=>{});}document.getElementById("profile-name-display")?.classList.remove("hidden");document.getElementById("btn-edit-profile")?.classList.remove("hidden");document.getElementById("profile-name-input")?.classList.add("hidden");document.getElementById("btn-save-profile")?.classList.add("hidden");showNotification("Name updated!","success");}
+// ── XP / Level / Streak / Achievements ───────────────────────
+const XP_PER_LEVEL = 200;
+const ACHIEVEMENTS_DEF = [
+    { id:"first_task",    icon:"zap",          title:"First Blood",       desc:"Complete your first task",                color:"#f97316", check: s => s.tasksDone >= 1 },
+    { id:"tasks_10",      icon:"check-circle-2",title:"Getting Traction",  desc:"Complete 10 tasks",                       color:"#22c55e", check: s => s.tasksDone >= 10 },
+    { id:"tasks_25",      icon:"trophy",        title:"Task Machine",      desc:"Complete 25 tasks",                       color:"#eab308", check: s => s.tasksDone >= 25 },
+    { id:"tasks_50",      icon:"flame",         title:"Unstoppable",       desc:"Complete 50 tasks",                       color:"#ef4444", check: s => s.tasksDone >= 50 },
+    { id:"tasks_100",     icon:"crown",         title:"Century",          desc:"Complete 100 tasks",                      color:"#8b5cf6", check: s => s.tasksDone >= 100 },
+    { id:"first_goal",    icon:"target",        title:"Goal Setter",       desc:"Reach your first goal",                   color:"#3b82f6", check: s => s.goalsDone >= 1 },
+    { id:"goals_5",       icon:"award",         title:"Visionary",         desc:"Reach 5 goals",                           color:"#06b6d4", check: s => s.goalsDone >= 5 },
+    { id:"first_project", icon:"folder-check",  title:"Builder",           desc:"Complete a full project",                 color:"#14b8a6", check: s => s.projDone >= 1 },
+    { id:"streak_3",      icon:"flame",         title:"On Fire",           desc:"3-day productivity streak",               color:"#f59e0b", check: s => s.streak >= 3 },
+    { id:"streak_7",      icon:"flame",         title:"Week Warrior",      desc:"7-day productivity streak",               color:"#f97316", check: s => s.streak >= 7 },
+    { id:"streak_30",     icon:"star",          title:"Iron Discipline",   desc:"30-day streak — absolute operator mode", color:"#8b5cf6", check: s => s.streak >= 30 },
+    { id:"first_expense", icon:"wallet",        title:"Financially Aware", desc:"Log your first expense",                  color:"#22c55e", check: s => s.expenses >= 1 },
+    { id:"big_spender",   icon:"trending-down", title:"Budget Watcher",    desc:"Log 20 expenses",                         color:"#3b82f6", check: s => s.expenses >= 20 },
+    { id:"doc_writer",    icon:"book-open",     title:"Documentarian",     desc:"Create 5 workspace docs",                 color:"#a855f7", check: s => s.docs >= 5 },
+];
+
+function _getAchievementStats() {
+    return {
+        tasksDone: appState.tasks.filter(t=>t.status==="completed").length,
+        goalsDone: appState.goals.filter(g=>g.status==="completed").length,
+        projDone:  appState.projects.filter(p=>{ const s=getProjectStats(p.id); return s.total>0&&s.progress===100; }).length,
+        streak:    _getStreak(),
+        expenses:  appState.finance.expenses.length,
+        docs:      appState.docs.length,
+    };
+}
+
+function _computeXP() {
+    const s = _getAchievementStats();
+    return (s.tasksDone * 15) + (s.goalsDone * 50) + (s.projDone * 100) + (s.streak * 5) + (s.expenses * 2) + (s.docs * 10);
+}
+
+function _computeLevel(xp) { return Math.max(1, Math.floor(xp / XP_PER_LEVEL) + 1); }
+
+function _getStreak() {
+    try {
+        const data = JSON.parse(localStorage.getItem("idraft_streak") || "{}");
+        return data.streak || 0;
+    } catch(e) { return 0; }
+}
+
+function _updateStreak() {
+    try {
+        const today = new Date().toISOString().slice(0,10);
+        const data  = JSON.parse(localStorage.getItem("idraft_streak") || "{}");
+        if (data.last === today) return;                       // already updated today
+        const yesterday = new Date(Date.now()-86400000).toISOString().slice(0,10);
+        const newStreak = data.last === yesterday ? (data.streak||0) + 1 : 1;
+        localStorage.setItem("idraft_streak", JSON.stringify({ last:today, streak:newStreak }));
+        appState.user.streak = newStreak;
+    } catch(e){}
+}
+
+function _checkAndUnlockAchievements() {
+    const stats = _getAchievementStats();
+    const unlocked = JSON.parse(localStorage.getItem("idraft_achievements") || "[]");
+    let newUnlocks = [];
+    ACHIEVEMENTS_DEF.forEach(def => {
+        if (!unlocked.includes(def.id) && def.check(stats)) {
+            unlocked.push(def.id);
+            newUnlocks.push(def);
+        }
+    });
+    if (newUnlocks.length) {
+        localStorage.setItem("idraft_achievements", JSON.stringify(unlocked));
+        newUnlocks.forEach(a => {
+            setTimeout(() => showNotification(`🏆 Achievement: ${a.title}!`, "xp"), 400);
+        });
+    }
+    return unlocked;
+}
+
 function renderProfile(){
+    _updateStreak();
+    const xp    = _computeXP();
+    const level = _computeLevel(xp);
+    const xpInLevel = xp % XP_PER_LEVEL;
+    const xpPct = Math.round(xpInLevel / XP_PER_LEVEL * 100);
+    appState.user.score = xp; appState.user.level = level;
+    appState.user.streak = _getStreak();
+
     updateUserNameUI();
     const r=document.getElementById("profile-role");if(r)r.textContent=appState.user.role;
-    const l=document.getElementById("profile-level");if(l)l.textContent=appState.user.level;
-    const s=document.getElementById("profile-score");if(s)s.textContent=appState.user.score.toLocaleString();
+    const l=document.getElementById("profile-level");if(l)l.textContent=level;
+    const s=document.getElementById("profile-score");
+    if(s)s.innerHTML=`${xp.toLocaleString()} XP <span class="text-xs text-zinc-400 font-normal ml-1">${xpPct}% to L${level+1}</span>`;
+
+    const streak = appState.user.streak;
+    const sl = document.getElementById("profile-streak"); if(sl) sl.textContent=streak;
+    const slb = document.getElementById("streak-label");
+    if(slb) slb.textContent = streak===0?"Start a streak today!":streak<3?"Keep going!":streak<7?"On fire! 🔥":streak<30?"Week warrior! 💪":"Iron discipline. 🏆";
+
     const done=appState.tasks.filter(t=>t.status==="completed").length;
     const gdone=appState.goals.filter(g=>g.status==="completed").length;
     const lt=document.getElementById("stat-lifetime-tasks");if(lt)lt.textContent=done;
     const lg=document.getElementById("stat-lifetime-goals");if(lg)lg.textContent=gdone;
+
+    // XP progress bar
+    let xpBar=document.getElementById("xp-progress-bar");
+    if(!xpBar){
+        const scoreEl=document.getElementById("profile-score")?.closest("span");
+        if(scoreEl){
+            const wrap=document.createElement("div");
+            wrap.className="w-full mt-2";
+            wrap.innerHTML=`<div class="flex justify-between text-[10px] text-zinc-400 mb-1"><span>XP Progress</span><span>${xpInLevel}/${XP_PER_LEVEL}</span></div><div class="w-full bg-zinc-200 rounded-full h-1.5"><div id="xp-progress-bar" class="bg-yellow-400 h-1.5 rounded-full transition-all" style="width:${xpPct}%"></div></div>`;
+            scoreEl.parentElement?.appendChild(wrap);
+            xpBar=document.getElementById("xp-progress-bar");
+        }
+    } else { xpBar.style.width=xpPct+"%"; }
+
+    // Achievements
+    const unlockedIds = _checkAndUnlockAchievements();
     const ach=document.getElementById("achievements-container");
-    if(ach){ach.innerHTML="";appState.user.achievements.forEach(a=>{ach.innerHTML+=`<div class="flex items-center gap-4 p-3 rounded-xl hover:bg-zinc-50 transition border border-transparent hover:border-zinc-100"><div class="w-12 h-12 bg-zinc-100 rounded-full flex items-center justify-center"><i data-lucide="${a.icon}" class="w-6 h-6 text-zinc-700"></i></div><div><h4 class="font-bold text-zinc-900 text-sm">${a.title}</h4><p class="text-xs text-zinc-500">${a.desc}</p></div></div>`;});}
+    if(ach){
+        ach.innerHTML="";
+        ACHIEVEMENTS_DEF.forEach(a=>{
+            const isUnlocked=unlockedIds.includes(a.id);
+            ach.innerHTML+=`<div class="flex items-center gap-4 p-3 rounded-xl border transition ${isUnlocked?"border-zinc-100 hover:border-zinc-200 hover:bg-zinc-50 opacity-100":"border-dashed border-zinc-200 opacity-40"}"><div class="w-11 h-11 rounded-xl flex items-center justify-center shrink-0" style="background:${a.color}20"><i data-lucide="${a.icon}" class="w-5 h-5" style="color:${a.color}"></i></div><div class="flex-1"><h4 class="font-bold text-zinc-900 text-sm">${a.title}</h4><p class="text-xs text-zinc-500">${a.desc}</p></div>${isUnlocked?`<div class="w-6 h-6 bg-green-500 rounded-full flex items-center justify-center"><i data-lucide="check" class="w-3.5 h-3.5 text-white"></i></div>`:"<div class=\"text-[10px] text-zinc-400 font-bold\">🔒</div>"}</div>`;
+        });
+    }
     lucide.createIcons();
 }
 
@@ -2514,18 +2759,25 @@ async function deleteGoal(id){
 }
 async function markTaskDone(id){
     const t=appState.tasks.find(x=>x.id===id);if(!t)return;
-    t.status="completed";_fullRefresh();
-    showNotification("Task done! ✅","success");
+    t.status="completed";
+    _updateStreak();
+    _checkAndUnlockAchievements();
+    _fullRefresh();
+    const xp=_computeXP(), lv=_computeLevel(xp);
+    showNotification(`Task done! +15 XP ✅ (L${lv})`,"success");
     if(uid()) sb.update("tasks",`id=eq.${id}&user_id=eq.${uid()}`,{status:"completed"}).catch(()=>{});
 }
 async function undoTask(id){
     const t=appState.tasks.find(x=>x.id===id);if(!t)return;
-    t.status="active";_fullRefresh();
+    t.status="active";
+    _fullRefresh();
     showNotification("Task restored","info");
     if(uid()) sb.update("tasks",`id=eq.${id}&user_id=eq.${uid()}`,{status:"active"}).catch(()=>{});
 }
 async function deleteTask(id){
-    appState.tasks=appState.tasks.filter(t=>t.id!==id);_fullRefresh();
+    appState.tasks=appState.tasks.filter(t=>t.id!==id);
+    _checkAndUnlockAchievements();
+    _fullRefresh();
     showNotification("Task deleted","warn");
     if(uid()) sb.delete("tasks",`id=eq.${id}&user_id=eq.${uid()}`).catch(()=>{});
 }
@@ -2560,7 +2812,10 @@ function _fullRefresh(){
     else if(av==="view-tasks") renderTasksPage();
     else if(av==="view-projects") renderProjectsPage();
     else if(av==="view-archive") renderArchive();
+    else if(av==="view-profile") renderProfile();
     updateDashboardStats();
+    // Always keep charts live
+    if(av!=="view-dashboard") updateDashboardStats();
 }
 function _softRefresh(){const av=document.querySelector(".view-section.active")?.id;if(av==="view-tasks")renderTasksPage();updateDashboardStats();}
 
@@ -2579,10 +2834,13 @@ function selectTaskIcon(n){selectedTaskIcon=n;document.querySelectorAll("#icon-p
 function selectPriority(lv){selectedTaskPriority=lv;document.querySelectorAll("#taskExtrasContainer .priority-option").forEach(el=>{el.style.outline="none";el.style.background="";});const el=document.getElementById(`pri-${lv}`);if(el){el.style.outline="2px solid #18181b";el.style.outlineOffset="1px";}}
 function selectEventColor(cls){selectedEventColor=cls;document.querySelectorAll("#eventModal .picker-option").forEach(el=>{el.style.outline="none";el.style.transform="scale(1)";el.style.boxShadow="none";});const map={"bg-blue-100 text-blue-800 border-blue-200":"col-blue","bg-purple-100 text-purple-800 border-purple-200":"col-purple","bg-green-100 text-green-800 border-green-200":"col-green","bg-orange-100 text-orange-800 border-orange-200":"col-orange","bg-pink-100 text-pink-800 border-pink-200":"col-pink","bg-zinc-100 text-zinc-800 border-zinc-200":"col-zinc"};const el=document.getElementById(map[cls]);if(el){el.style.outline="3px solid #18181b";el.style.outlineOffset="2px";el.style.transform="scale(1.2)";el.style.boxShadow="0 0 0 2px white,0 0 0 4px #18181b";}}
 
+let _editTaskId = null;   // non-null = edit mode
+
 function handleCreate(type){
-    currentAction=type;
+    currentAction=type; _editTaskId=null;
     document.getElementById("modalTitle").textContent=type==="task"?"Add Task":type==="goal"?"Add Goal":"New Project";
     document.getElementById("modalDesc").textContent=type==="task"?"What do you need to do?":type==="goal"?"Monthly objective?":"Project name.";
+    document.getElementById("modalSaveBtn").textContent="Save Item";
     if(modalInput) modalInput.value="";
     const ico=document.getElementById("iconSelectContainer"),ext=document.getElementById("taskExtrasContainer");
     if(type==="task"){
@@ -2594,7 +2852,27 @@ function handleCreate(type){
     _showModal("inputModal","inputModalContent");
     setTimeout(()=>modalInput?.focus(),20);
 }
-function closeModal(){_hideModal("inputModal","inputModalContent");currentAction=null;}
+
+function openEditTask(id){
+    const t=appState.tasks.find(x=>x.id===id); if(!t) return;
+    _editTaskId=id; currentAction="task";
+    document.getElementById("modalTitle").textContent="Edit Task";
+    document.getElementById("modalDesc").textContent="Update the task details.";
+    document.getElementById("modalSaveBtn").textContent="Save Changes";
+    if(modalInput) modalInput.value=t.title;
+    document.getElementById("iconSelectContainer")?.classList.remove("hidden");
+    document.getElementById("taskExtrasContainer")?.classList.remove("hidden");
+    selectTaskIcon(t.icon||"zap");
+    selectPriority(t.priority||"medium");
+    const ps=document.getElementById("modalProjectSelect");
+    if(ps){ps.innerHTML=`<option value="none">-- Global Task --</option>`;appState.projects.forEach(p=>{ps.innerHTML+=`<option value="${p.id}">${escHtml(p.title)}</option>`;});ps.value=t.projectId||"none";}
+    const gs=document.getElementById("modalTaskGoal");
+    if(gs){gs.innerHTML=`<option value="none">-- No Goal --</option>`;appState.goals.forEach(g=>{gs.innerHTML+=`<option value="${g.id}">${escHtml(g.text)}</option>`;});gs.value=t.goalId||"none";}
+    _showModal("inputModal","inputModalContent");
+    setTimeout(()=>modalInput?.focus(),20);
+}
+
+function closeModal(){_hideModal("inputModal","inputModalContent");currentAction=null;_editTaskId=null;}
 
 if(document.getElementById("modalSaveBtn")){
     document.getElementById("modalSaveBtn").addEventListener("click",async()=>{
@@ -2604,9 +2882,24 @@ if(document.getElementById("modalSaveBtn")){
             const gIdRaw=document.getElementById("modalTaskGoal")?.value||"none";
             const pId=pIdRaw==="none"?"none":parseInt(pIdRaw);
             const gId=gIdRaw==="none"?"none":parseInt(gIdRaw);
-            const row=await sb.insert("tasks",{user_id:uid(),title:v,date_str:todayDateStr(),icon:selectedTaskIcon,status:"active",priority:selectedTaskPriority,project_id:pIdRaw==="none"?null:parseInt(pIdRaw),goal_id:gIdRaw==="none"?null:parseInt(gIdRaw),is_spotlight:false});
-            if(row) appState.tasks.unshift({id:row.id,title:v,date:todayDateStr(),icon:selectedTaskIcon,status:"active",projectId:pId,priority:selectedTaskPriority,goalId:gId,isSpotlight:false});
-            showNotification("Task created!","success");
+            if(_editTaskId){
+                // EDIT MODE
+                const t=appState.tasks.find(x=>x.id===_editTaskId);
+                if(t){
+                    t.title=v; t.icon=selectedTaskIcon; t.priority=selectedTaskPriority;
+                    t.projectId=pIdRaw==="none"?"none":pId; t.goalId=gIdRaw==="none"?"none":gId;
+                    if(uid()) sb.update("tasks",`id=eq.${_editTaskId}&user_id=eq.${uid()}`,{
+                        title:v,icon:selectedTaskIcon,priority:selectedTaskPriority,
+                        project_id:pIdRaw==="none"?null:pId,goal_id:gIdRaw==="none"?null:gId
+                    }).catch(()=>{});
+                    showNotification("Task updated ✓","success");
+                }
+            } else {
+                // CREATE MODE
+                const row=await sb.insert("tasks",{user_id:uid(),title:v,date_str:todayDateStr(),icon:selectedTaskIcon,status:"active",priority:selectedTaskPriority,project_id:pIdRaw==="none"?null:parseInt(pIdRaw),goal_id:gIdRaw==="none"?null:parseInt(gIdRaw),is_spotlight:false});
+                if(row) appState.tasks.unshift({id:row.id,title:v,date:todayDateStr(),icon:selectedTaskIcon,status:"active",projectId:pId,priority:selectedTaskPriority,goalId:gId,isSpotlight:false});
+                showNotification("Task created!","success");
+            }
         }else if(currentAction==="goal"){
             const row=await sb.insert("goals",{user_id:uid(),text:v,status:"active"});
             if(row) appState.goals.unshift({id:row.id,text:v,status:"active"});
